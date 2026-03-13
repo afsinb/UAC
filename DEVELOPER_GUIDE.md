@@ -65,6 +65,11 @@ javac -d build/classes $(find src/main/java -name "*.java" | tr '\n' ' ')
 java -cp build/classes com.blacklight.uac.demo.WorkingDemo
 ```
 
+**Run With Verbose Dashboard API Logs (debug only):**
+```bash
+java -Duac.verbose.dashboard=true -cp build/classes com.blacklight.uac.demo.WorkingDemo
+```
+
 **With Output to File:**
 ```bash
 java -cp build/classes com.blacklight.uac.demo.WorkingDemo > /tmp/dashboard.log 2>&1 &
@@ -103,7 +108,11 @@ rm /tmp/uac-demo.log
 - Data loading for each system
 - Flow creation
 - Alarm creation
-- API request logging
+- Dashboard/API request logs only when `uac.verbose.dashboard=true`
+
+**Note (March 2026):**
+- `SimpleDashboard` no longer logs every `/api/alarms` request by default to reduce log spam.
+- Enable verbose request tracing only when debugging dashboard API behavior.
 
 ## Troubleshooting
 

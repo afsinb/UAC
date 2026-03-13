@@ -6,6 +6,10 @@
 
 ## 🚀 PROJECT AT A GLANCE
 
+### Recent Changes
+- **2026-03-13 (`UAC_LOG_SPAM`)**: Dashboard alarm API logging is now quiet by default.
+- To re-enable per-request dashboard API logs for troubleshooting, run with `-Duac.verbose.dashboard=true`.
+
 ### What is UAC?
 A non-invasive autonomous monitoring layer that automatically detects, diagnoses, and heals system issues without modifying your target application.
 
