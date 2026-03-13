@@ -1,0 +1,41 @@
+rules:
+  - id: "RULE-NULL_POINTER_EXCEPTION"
+    anomalyType: "NULL_POINTER_EXCEPTION"
+    severity: "HIGH"
+    match: "NullPointerException"
+    sourceFile: "PaymentService.java"
+    lineNumber: 24
+    defaultAction: "Add null guard before dereference"
+
+  - id: "RULE-ARRAY_INDEX_OUT_OF_BOUNDS"
+    anomalyType: "ARRAY_INDEX_OUT_OF_BOUNDS"
+    severity: "HIGH"
+    match: "ArrayIndexOutOfBoundsException"
+    sourceFile: "PaymentService.java"
+    lineNumber: 88
+    defaultAction: "Add array bounds checks before index access"
+
+  - id: "RULE-CLASS_CAST_EXCEPTION"
+    anomalyType: "CLASS_CAST_EXCEPTION"
+    severity: "MEDIUM"
+    match: "ClassCastException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "Add type checks and safe casting"
+
+  - id: "RULE-CONNECTION_TIMEOUT"
+    anomalyType: "CONNECTION_TIMEOUT"
+    severity: "MEDIUM"
+    match: "Connection timeout"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "Retry with backoff and circuit breaker"
+
+  - id: "RULE-OUT_OF_MEMORY_ERROR"
+    anomalyType: "OUT_OF_MEMORY_ERROR"
+    severity: "HIGH"
+    match: "OutOfMemoryError"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "Reduce memory pressure and review heap usage"
+

@@ -644,7 +644,10 @@ async function showFlow(flowId) {
             const cls = st === 'COMPLETED' ? 'completed' : (st === 'FAILED' ? 'failed' : (st === 'WAITING_DEPENDENCIES' ? 'waiting' : 'pending'));
             const icon = st === 'COMPLETED' ? '✓' : (st === 'FAILED' ? '✗' : (st === 'WAITING_DEPENDENCIES' ? '⏳' : '○'));
             const deps = Array.isArray(s.dependencies) ? s.dependencies : [];
-            const depsText = st === 'WAITING_DEPENDENCIES' && deps.length ? `<div style="margin-top:4px;color:#f59e0b;font-size:10px">${deps.map(d => `${d.id||'PR'}:${d.status||'UNKNOWN'}`).join(', ')}</div>` : '';
+            const depsText = st === 'WAITING_DEPENDENCIES' && deps.length ? `<div style="margin-top:4px;color:#f59e0b;font-size:10px">${deps.map(d => {
+                const label = d.name || d.title || d.id || 'PR';
+                return `${label} (${d.status || 'UNKNOWN'})`;
+            }).join(', ')}</div>` : '';
             return `<div class="journey-stage ${cls}"><div style="font-size:10px;color:#7d8590">${s.label || s.key}</div><div style="font-size:11px">${icon} ${st}</div>${depsText}</div>`;
         }).join('')}</div></div>` : '';
 

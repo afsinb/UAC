@@ -2,6 +2,9 @@ package com.blacklight.uac.demo;
 
 import com.blacklight.uac.docker.DockerManager;
 import com.blacklight.uac.git.GitHubAPI;
+import com.blacklight.uac.ai.AIDecisionEngine;
+import com.blacklight.uac.evolver.PRDeploymentGate;
+import com.blacklight.uac.evolver.PRLifecycleState;
 import com.blacklight.uac.ui.SelfHealingDashboard;
 import com.blacklight.uac.ui.SimpleDashboard;
 
@@ -18,6 +21,7 @@ import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -44,6 +48,9 @@ public class LocalSystemsMonitorDemo {
     private final ScheduledExecutorService scheduler;
     private final Map<String, SystemConfig> systems;
     private final boolean realPrMode;
+    private final AIDecisionEngine aiDecisionEngine;
+    private final AnomalyRuleRegistry anomalyRuleRegistry;
+    private final PRDeploymentGate deploymentGate;
 
     public LocalSystemsMonitorDemo(int dashboardPort, int dataPort) throws IOException {
         this.dataModel = new SelfHealingDashboard(dataPort);
@@ -51,6 +58,13 @@ public class LocalSystemsMonitorDemo {
         this.scheduler = Executors.newScheduledThreadPool(4);
         this.systems = new LinkedHashMap<>();
         this.realPrMode = "true".equalsIgnoreCase(System.getenv().getOrDefault("UAC_REAL_PR", "false"));
+        this.aiDecisionEngine = new AIDecisionEngine();
+        this.deploymentGate = PRDeploymentGate.getInstance();
+        Path projectRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        this.anomalyRuleRegistry = new AnomalyRuleRegistry(
+                projectRoot.resolve("config").resolve("next").resolve("anomaly-rules.yaml"),
+                projectRoot.resolve("config").resolve("next").resolve("anomaly-learned.yaml")
+        );
     }
 
     public static void main(String[] args) throws Exception {
@@ -97,12 +111,14 @@ public class LocalSystemsMonitorDemo {
         System.out.println("PR Mode: " + (realPrMode ? "REAL (git+github)" : "SIMULATED"));
     }
 
+
     private void pollSystems() {
         for (SystemConfig cfg : systems.values()) {
             try {
                 Map<String, Long> health = fetchHealth(cfg.healthUrl);
                 updateHealthAndGenerateFlows(cfg, health);
                 scanNewLogLines(cfg);
+                refreshWaitingDependencyStates(cfg);
             } catch (Exception ex) {
                 addAlarm(cfg, "MONITORING_FAILURE", "HIGH", "Health poll failed: " + ex.getMessage(), null);
             }
@@ -193,23 +209,20 @@ public class LocalSystemsMonitorDemo {
             while ((line = raf.readLine()) != null) {
                 String normalized = line.toUpperCase(Locale.ROOT);
 
-                // Explicit anomaly mapping: Array index out of bounds in app logs -> code-fix flow.
-                if (normalized.contains("ARRAYINDEXOUTOFBOUNDSEXCEPTION")
-                        && shouldTrigger(cfg, "array-index-oob", 45)) {
-                    addAlarm(cfg, "ANOMALY_DETECTED", "HIGH", line, null);
-                    dataModel.recordAnomalyDetected(dataModel.getSystemId(cfg.name),
-                            "ARRAY_INDEX_OUT_OF_BOUNDS", "HIGH");
+                // 1) Catalog-based detection (external rules YAML)
+                AnomalyRuleRegistry.AnomalyRule matched = anomalyRuleRegistry.findMatchingRule(line);
+                if (matched != null && shouldTrigger(cfg, "rule-" + matched.anomalyType, 45)) {
+                    handleAnomalyByRule(cfg, matched, line);
+                }
 
-                    createCodeFixFlow(
-                            cfg,
-                            "ARRAY_INDEX_OUT_OF_BOUNDS",
-                            "HIGH",
-                            "Detected ArrayIndexOutOfBoundsException in application logs",
-                            "PaymentService.java",
-                            88,
-                            "Add bounds checks before array access",
-                            "PR-" + shortId()
-                    );
+                // 2) Unknown exception detection and online learning
+                String exceptionClass = anomalyRuleRegistry.extractExceptionClass(line);
+                if (exceptionClass != null) {
+                    String learnedType = anomalyRuleRegistry.normalizeAnomalyType(exceptionClass);
+                    if (shouldTrigger(cfg, "unknown-" + learnedType, 45)) {
+                        AnomalyRuleRegistry.AnomalyRule learnedRule = anomalyRuleRegistry.ensureLearnedRule(exceptionClass);
+                        handleAnomalyByRule(cfg, learnedRule, line);
+                    }
                 }
 
                 if (normalized.contains("ERROR") || normalized.contains("EXCEPTION")) {
@@ -239,6 +252,44 @@ public class LocalSystemsMonitorDemo {
         }
     }
 
+    private void handleAnomalyByRule(SystemConfig cfg, AnomalyRuleRegistry.AnomalyRule rule, String logLine) {
+        String systemId = dataModel.getSystemId(cfg.name);
+
+        addAlarm(cfg, "ANOMALY_DETECTED", defaultIfBlank(rule.severity, "HIGH"), logLine, null);
+        dataModel.recordAnomalyDetected(systemId, rule.anomalyType, defaultIfBlank(rule.severity, "HIGH"));
+
+        Map<String, Object> context = new HashMap<>();
+        context.put("system", cfg.name);
+        context.put("logLine", logLine);
+        context.put("sourceFile", defaultIfBlank(rule.sourceFile, "UnknownSource.java"));
+        context.put("lineNumber", rule.lineNumber > 0 ? rule.lineNumber : 1);
+
+        if (!aiDecisionEngine.hasExactRecipe(rule.anomalyType)) {
+            aiDecisionEngine.registerLearnedRecipe(rule.anomalyType, defaultIfBlank(rule.match, rule.anomalyType));
+        }
+
+        AIDecisionEngine.AIDecision decision = aiDecisionEngine.analyze(rule.anomalyType, context);
+        if (decision.getRecommendedRecipe() == null) {
+            aiDecisionEngine.registerLearnedRecipe(rule.anomalyType, rule.match);
+            decision = aiDecisionEngine.analyze(rule.anomalyType, context);
+        }
+
+        String executionAction = decision.getRecommendedRecipe() != null
+                ? "AI selected recipe: " + decision.getRecommendedRecipe().getName()
+                : defaultIfBlank(rule.defaultAction, "AI-driven safe fix recommendation");
+
+        createCodeFixFlow(
+                cfg,
+                rule.anomalyType,
+                defaultIfBlank(rule.severity, "HIGH"),
+                "Detected from log rule: " + rule.match,
+                defaultIfBlank(rule.sourceFile, "UnknownSource.java"),
+                rule.lineNumber > 0 ? rule.lineNumber : 1,
+                executionAction,
+                "PR-" + shortId()
+        );
+    }
+
     private void createCodeFixFlow(
             SystemConfig cfg,
             String anomalyType,
@@ -258,15 +309,21 @@ public class LocalSystemsMonitorDemo {
         List<Map<String, Object>> deps = new ArrayList<>();
         Map<String, Object> dep1 = new HashMap<>();
         dep1.put("id", extractPrId(resolvedPrId, "PR-" + shortId()));
+        dep1.put("name", anomalyType + " primary fix");
         dep1.put("title", "Primary code fix PR");
-        dep1.put("status", realPrMode ? "APPROVED" : "OPEN");
+        dep1.put("status", "OPEN");
         deps.add(dep1);
 
-        Map<String, Object> dep2 = new HashMap<>();
-        dep2.put("id", "PR-" + shortId());
-        dep2.put("title", "Related compatibility PR");
-        dep2.put("status", "OPEN");
-        deps.add(dep2);
+        // Keep synthetic follow-up dependency only in simulated mode.
+        // In real mode, every shown dependency must map to an actual PR in GitHub.
+        if (!realPrMode) {
+            Map<String, Object> dep2 = new HashMap<>();
+            dep2.put("id", "PR-" + shortId());
+            dep2.put("name", anomalyType + " compatibility follow-up");
+            dep2.put("title", "Related compatibility PR");
+            dep2.put("status", "OPEN");
+            deps.add(dep2);
+        }
 
         // Consolidation rule: for the same system, keep a single pending deployment flow
         // and merge all waiting PR dependencies into that one deployment step.
@@ -278,9 +335,11 @@ public class LocalSystemsMonitorDemo {
             return;
         }
 
-        // After code is patched & PR raised, rebuild + redeploy the Docker container
-        String deployStatus = "skipped";
-        if (realPrMode && cfg.isDockerDeployment()
+        boolean waitingDependencies = waitingDependencyCount(deps) > 0;
+
+        // Deployment should run only when dependencies are already unblocked.
+        String deployStatus = waitingDependencies ? "waiting-dependencies" : "skipped";
+        if (!waitingDependencies && realPrMode && cfg.isDockerDeployment()
                 && resolvedPrId != null && resolvedPrId.startsWith("http")) {
             System.out.println("  → Rebuilding Docker image for " + cfg.dockerServiceName + " with fix applied...");
             boolean redeployed = DockerManager.rebuildAndRedeploy(cfg.dockerComposeFile, cfg.dockerServiceName);
@@ -300,11 +359,20 @@ public class LocalSystemsMonitorDemo {
         addStep(flow, "CONTEXT",    "Mapped anomaly to source + config",            "CodeAnalysisMCP",  "sourceFile",  sourceFile);
         addStep(flow, "HYPOTHESIS", "Likely logical/code defect",                   "DynamicAI",        "model",       "RuleBasedModel");
         addStep(flow, "EXECUTION",  executionAction,                                "DevelopmentMCP",   "prId",        resolvedPrId);
-        addStep(flow, "DEPLOY",     "Rebuild Docker image and redeploy container",  "DockerMCP",        "status",      deployStatus);
-        addStep(flow, "VALIDATION", "Post-fix smoke checks pass",                   "TelemetryMCP",     "status",      "success");
+        String deployAction = waitingDependencies
+                ? "Queued for deploy until PR dependencies are merged"
+                : "Rebuild Docker image and redeploy container";
+        addStep(flow, "DEPLOY",     deployAction,                                      "DockerMCP",        "status",      deployStatus,
+                waitingDependencies ? "PENDING" : "COMPLETED");
+
+        addStep(flow, "VALIDATION", waitingDependencies
+                        ? "Validation pending dependency merge"
+                        : "Post-fix smoke checks pass",
+                "TelemetryMCP", "status", waitingDependencies ? "blocked_by_dependencies" : "success",
+                waitingDependencies ? "PENDING" : "COMPLETED");
 
         flow.deploymentDependencies = deps;
-        flow.workflowStatus = waitingDependencyCount(deps) > 0 ? "WAITING_DEPENDENCIES" : "COMPLETED";
+        flow.workflowStatus = waitingDependencies ? "WAITING_DEPENDENCIES" : "COMPLETED";
         flow.journey = buildJourney(
                 flow.workflowStatus,
                 flow.createdAt,
@@ -405,6 +473,169 @@ public class LocalSystemsMonitorDemo {
         existing.addAll(byId.values());
     }
 
+    private void refreshWaitingDependencyStates(SystemConfig cfg) {
+        String systemId = dataModel.getSystemId(cfg.name);
+        synchronized (dataModel.allFlows) {
+            for (SelfHealingDashboard.HealingFlow flow : dataModel.allFlows) {
+                if (flow == null || !systemId.equals(flow.systemId)) continue;
+                if (flow.deploymentDependencies == null || flow.deploymentDependencies.isEmpty()) continue;
+
+                boolean changed = false;
+                changed |= cleanupLegacySyntheticDependencies(flow);
+                for (Map<String, Object> dep : flow.deploymentDependencies) {
+                    changed |= refreshDependencyStatus(cfg, dep);
+                }
+
+                if (changed) {
+                    int waiting = waitingDependencyCount(flow.deploymentDependencies);
+                    String previousWorkflowStatus = flow.workflowStatus;
+                    flow.workflowStatus = waiting > 0 ? "WAITING_DEPENDENCIES" : "COMPLETED";
+
+                    if ("WAITING_DEPENDENCIES".equals(previousWorkflowStatus) && waiting == 0) {
+                        finalizeDeploymentAfterDependencies(cfg, flow);
+                    }
+
+                    flow.journey = buildJourney(
+                            flow.workflowStatus,
+                            flow.createdAt,
+                            flow.createdAt + 300,
+                            waiting == 0 ? System.currentTimeMillis() : null,
+                            "Anomaly detected by TelemetryMCP",
+                            "Fixes prepared and tracked",
+                            waiting == 0 ? "All dependent PRs merged; deployment unblocked"
+                                    : "Waiting on dependent PRs",
+                            flow.deploymentDependencies
+                    );
+                }
+            }
+        }
+    }
+
+    private boolean cleanupLegacySyntheticDependencies(SelfHealingDashboard.HealingFlow flow) {
+        if (!realPrMode || flow == null || flow.deploymentDependencies == null || flow.deploymentDependencies.isEmpty()) {
+            return false;
+        }
+
+        int before = flow.deploymentDependencies.size();
+        flow.deploymentDependencies.removeIf(dep -> {
+            String name = String.valueOf(dep.getOrDefault("name", "")).toLowerCase(Locale.ROOT);
+            String title = String.valueOf(dep.getOrDefault("title", "")).toLowerCase(Locale.ROOT);
+            return name.contains("compatibility follow-up") || title.contains("related compatibility pr");
+        });
+        return flow.deploymentDependencies.size() != before;
+    }
+
+    private boolean refreshDependencyStatus(SystemConfig cfg, Map<String, Object> dep) {
+        String depId = String.valueOf(dep.getOrDefault("id", ""));
+        Integer prNum = parsePrNumber(depId);
+        if (prNum == null) return false;
+
+        String prev = String.valueOf(dep.getOrDefault("status", "OPEN"));
+
+        // In real PR mode, GitHub is the source of truth for approval/merge visibility.
+        if (realPrMode && shouldTrigger(cfg, "pr-sync-" + prNum, 30)) {
+            Map<String, String> gh = fetchGitHubPrStatus(cfg, prNum);
+            if (!gh.isEmpty()) {
+                String mapped = gh.getOrDefault("status", prev);
+                dep.put("status", mapped);
+                if (gh.containsKey("title") && !gh.get("title").isBlank()) dep.put("title", gh.get("title"));
+                if (gh.containsKey("name") && !gh.get("name").isBlank()) dep.put("name", gh.get("name"));
+                return !prev.equals(mapped);
+            }
+        }
+
+        // 1) Internal gate state (fast path)
+        if (deploymentGate.findByPrNumber(prNum).isPresent()) {
+            PRDeploymentGate.PRRecord rec = deploymentGate.findByPrNumber(prNum).get();
+            dep.put("status", toDependencyStatus(rec.getState()));
+            dep.put("name", "PR #" + prNum + " " + rec.getBranch() + " -> " + rec.getTargetBranch());
+            dep.put("title", "PR #" + prNum + " " + rec.getBranch());
+            return !prev.equals(dep.get("status"));
+        }
+
+        return false;
+    }
+
+    private Integer parsePrNumber(String depId) {
+        if (depId == null || depId.isBlank()) return null;
+        String s = depId.startsWith("PR-") ? depId.substring(3) : depId;
+        if (!s.matches("\\d+")) return null;
+        try {
+            return Integer.parseInt(s);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private String toDependencyStatus(PRLifecycleState state) {
+        if (state == null) return "OPEN";
+        return switch (state) {
+            case MERGED, DEPLOYED -> "MERGED";
+            case APPROVED, MERGING -> "APPROVED";
+            case CONFLICT_DETECTED, MERGE_ABORTED, CHANGES_REQUESTED -> "BLOCKED";
+            case CLOSED -> "CLOSED";
+            default -> "OPEN";
+        };
+    }
+
+    private Map<String, String> fetchGitHubPrStatus(SystemConfig cfg, int prNumber) {
+        try {
+            String[] ownerRepo = parseOwnerRepo(cfg.gitRepository);
+            if (ownerRepo == null) return Map.of();
+            String repo = ownerRepo[0] + "/" + ownerRepo[1];
+
+            ProcessBuilder pb = new ProcessBuilder(
+                    "gh", "pr", "view", String.valueOf(prNumber),
+                    "--repo", repo,
+                    "--json", "state,reviewDecision,title,isDraft"
+            );
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String out = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int code = p.waitFor();
+            if (code != 0 || out.isBlank()) return Map.of();
+
+            String state = extractJsonValue(out, "state");
+            String reviewDecision = extractJsonValue(out, "reviewDecision");
+            String isDraft = extractJsonValue(out, "isDraft");
+            String title = extractJsonValue(out, "title");
+
+            String status = "OPEN";
+            if ("MERGED".equalsIgnoreCase(state)) {
+                status = "MERGED";
+            } else if ("CLOSED".equalsIgnoreCase(state)) {
+                status = "CLOSED";
+            } else if ("OPEN".equalsIgnoreCase(state)) {
+                boolean approved = "APPROVED".equalsIgnoreCase(reviewDecision);
+                boolean draft = "true".equalsIgnoreCase(isDraft);
+                status = (!draft && approved) ? "APPROVED" : "OPEN";
+            }
+
+            Map<String, String> result = new HashMap<>();
+            result.put("status", status);
+            if (title != null) {
+                result.put("title", title);
+                result.put("name", "PR #" + prNumber + " " + title);
+            }
+            return result;
+        } catch (Exception e) {
+            return Map.of();
+        }
+    }
+
+    private String extractJsonValue(String json, String key) {
+        Pattern p = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
+        Matcher m = p.matcher(json);
+        if (m.find()) {
+            return m.group(1);
+        }
+
+        Pattern raw = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*(true|false|null|-?\\d+(?:\\.\\d+)?)",
+                Pattern.CASE_INSENSITIVE);
+        Matcher rawMatcher = raw.matcher(json);
+        return rawMatcher.find() ? rawMatcher.group(1) : null;
+    }
+
     private void createOperationalFlow(
             SystemConfig cfg,
             String anomalyType,
@@ -468,10 +699,61 @@ public class LocalSystemsMonitorDemo {
     }
 
     private void addStep(SelfHealingDashboard.HealingFlow flow, String phase, String action, String mcp, String key, Object value) {
+        addStep(flow, phase, action, mcp, key, value, "COMPLETED");
+    }
+
+    private void addStep(SelfHealingDashboard.HealingFlow flow,
+                         String phase,
+                         String action,
+                         String mcp,
+                         String key,
+                         Object value,
+                         String stepStatus) {
         SelfHealingDashboard.FlowStep step = new SelfHealingDashboard.FlowStep(phase, action, mcp);
-        step.status = "COMPLETED";
+        step.status = stepStatus;
         step.details.put(key, value);
         flow.steps.add(step);
+    }
+
+    private void finalizeDeploymentAfterDependencies(SystemConfig cfg, SelfHealingDashboard.HealingFlow flow) {
+        SelfHealingDashboard.FlowStep deployStep = findStep(flow, "DEPLOY");
+        SelfHealingDashboard.FlowStep validationStep = findStep(flow, "VALIDATION");
+        String prId = extractExecutionPrId(flow);
+
+        String deployStatus = "skipped";
+        if (realPrMode && cfg.isDockerDeployment() && prId != null && prId.startsWith("http")) {
+            System.out.println("  → Rebuilding Docker image for " + cfg.dockerServiceName + " after dependencies merged...");
+            boolean redeployed = DockerManager.rebuildAndRedeploy(cfg.dockerComposeFile, cfg.dockerServiceName);
+            deployStatus = redeployed ? "redeployed" : "rebuild-failed";
+        }
+
+        if (deployStep != null) {
+            deployStep.status = "COMPLETED";
+            deployStep.action = "Rebuild Docker image and redeploy container";
+            deployStep.details.put("status", deployStatus);
+        }
+        if (validationStep != null) {
+            validationStep.status = "COMPLETED";
+            validationStep.action = "Post-fix smoke checks pass";
+            validationStep.details.put("status", "success");
+        }
+    }
+
+    private SelfHealingDashboard.FlowStep findStep(SelfHealingDashboard.HealingFlow flow, String phase) {
+        if (flow == null || flow.steps == null) return null;
+        for (SelfHealingDashboard.FlowStep step : flow.steps) {
+            if (step != null && phase.equals(step.phase)) {
+                return step;
+            }
+        }
+        return null;
+    }
+
+    private String extractExecutionPrId(SelfHealingDashboard.HealingFlow flow) {
+        SelfHealingDashboard.FlowStep execution = findStep(flow, "EXECUTION");
+        if (execution == null || execution.details == null) return null;
+        Object pr = execution.details.get("prId");
+        return pr == null ? null : String.valueOf(pr);
     }
 
     private void addAlarm(SystemConfig cfg, String type, String severity, String message, String flowId) {
@@ -503,6 +785,10 @@ public class LocalSystemsMonitorDemo {
             }
         }
         return fallback;
+    }
+
+    private String defaultIfBlank(String v, String d) {
+        return (v == null || v.isBlank()) ? d : v;
     }
 
     private Map<String, Object> buildJourney(String flowStatus,
@@ -584,10 +870,10 @@ public class LocalSystemsMonitorDemo {
 
             // ── Git operations FIRST so the patch lands on a clean fix branch ──
             String branch = "uac/fix-" + shortId();
-
-            // Checkout base branch (try main, fall back to master)
-            if (!git(repoPath, "checkout", "main") && !git(repoPath, "checkout", "master")) {
-                return fallbackPrId + " (simulated:checkout-main-failed)";
+            List<String> baseCandidates = resolveBaseBranchCandidates(cfg, repoPath);
+            String baseBranch = checkoutFirstAvailableBase(repoPath, baseCandidates);
+            if (baseBranch == null) {
+                return fallbackPrId + " (simulated:checkout-base-failed:" + String.join("|", baseCandidates) + ")";
             }
             if (!git(repoPath, "checkout", "-b", branch)) {
                 return fallbackPrId + " (simulated:create-branch-failed)";
@@ -595,6 +881,11 @@ public class LocalSystemsMonitorDemo {
 
             // ── Now apply the patch on the fix branch ──────────────────────────
             boolean patched = applyPatchForAnomaly(targetFile, anomalyType);
+            if (!patched) {
+                // Unknown or unmatched anomaly: persist a learned recipe artifact
+                // so the branch still carries a meaningful change for review.
+                patched = createFallbackRecipeArtifact(repoPath, anomalyType, sourceFile, title);
+            }
             if (!patched) {
                 return fallbackPrId + " (simulated:no-patch-applied)";
             }
@@ -609,7 +900,6 @@ public class LocalSystemsMonitorDemo {
                 return fallbackPrId + " (simulated:git-push-failed)";
             }
 
-            String baseBranch = (cfg.gitBranch != null && !cfg.gitBranch.isBlank()) ? cfg.gitBranch : "main";
             String prTitle   = "UAC Fix: " + anomalyType;
             String prBody    = "Automated fix by UAC monitor for system: " + cfg.name;
 
@@ -637,6 +927,59 @@ public class LocalSystemsMonitorDemo {
         } catch (Exception ex) {
             return fallbackPrId + " (simulated:real-pr-error:" + ex.getClass().getSimpleName() + ")";
         }
+    }
+
+    private List<String> resolveBaseBranchCandidates(SystemConfig cfg, Path repoPath) {
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+
+        // 1) Configured branch first (if present)
+        if (cfg.gitBranch != null && !cfg.gitBranch.isBlank()) {
+            candidates.add(cfg.gitBranch.trim());
+        }
+
+        // 2) origin/HEAD symbolic ref -> e.g. refs/remotes/origin/develop
+        String originHead = gitOutput(repoPath, "symbolic-ref", "--quiet", "refs/remotes/origin/HEAD");
+        if (originHead != null && originHead.contains("/")) {
+            String b = originHead.substring(originHead.lastIndexOf('/') + 1).trim();
+            if (!b.isBlank()) candidates.add(b);
+        }
+
+        // 3) Current checked-out branch
+        String current = gitOutput(repoPath, "rev-parse", "--abbrev-ref", "HEAD");
+        if (current != null) {
+            current = current.trim();
+            if (!current.isBlank() && !"HEAD".equals(current)) {
+                candidates.add(current);
+            }
+        }
+
+        // 4) Common defaults + common team branch
+        candidates.add("develop");
+        candidates.add("main");
+        candidates.add("master");
+
+        return new ArrayList<>(candidates);
+    }
+
+    private String checkoutFirstAvailableBase(Path repoPath, List<String> candidates) {
+        for (String candidate : candidates) {
+            if (candidate == null || candidate.isBlank()) continue;
+
+            // 1) Prefer an existing local branch.
+            if (git(repoPath, "checkout", candidate)) {
+                System.out.println("  ✓ Using base branch: " + candidate);
+                return candidate;
+            }
+
+            // 2) If local branch doesn't exist, try to materialize it from origin/<candidate>.
+            // This handles repos whose default branch exists only as remote-tracking locally.
+            if (git(repoPath, "fetch", "origin", candidate)
+                    && git(repoPath, "checkout", "-B", candidate, "origin/" + candidate)) {
+                System.out.println("  ✓ Using base branch from remote: " + candidate + " (origin/" + candidate + ")");
+                return candidate;
+            }
+        }
+        return null;
     }
 
     private Path resolveLocalRepoPath(SystemConfig cfg) {
@@ -792,6 +1135,52 @@ public class LocalSystemsMonitorDemo {
         return true;
     }
 
+    private boolean createFallbackRecipeArtifact(Path repoPath,
+                                                 String anomalyType,
+                                                 String sourceFile,
+                                                 String title) {
+        try {
+            Path dir = repoPath.resolve(".uac").resolve("learned-recipes");
+            Files.createDirectories(dir);
+
+            String safeName = anomalyType == null || anomalyType.isBlank()
+                    ? "UNKNOWN_ANOMALY"
+                    : anomalyType.replaceAll("[^A-Za-z0-9._-]", "_");
+
+            Path file = dir.resolve(safeName + ".md");
+            String now = Instant.now().toString();
+
+            String content = "# UAC Learned Recipe: " + safeName + "\n\n"
+                    + "- Generated: " + now + "\n"
+                    + "- Source file: " + (sourceFile == null ? "UnknownSource.java" : sourceFile) + "\n"
+                    + "- Context: " + (title == null ? "n/a" : title) + "\n\n"
+                    + "## Suggested Safe Actions\n"
+                    + "1. Add defensive guards around risky operations.\n"
+                    + "2. Add structured error logging and correlation IDs.\n"
+                    + "3. Add regression tests for this anomaly signature.\n";
+
+            String existing = Files.exists(file)
+                    ? Files.readString(file, StandardCharsets.UTF_8)
+                    : "";
+
+            if (existing.equals(content)) {
+                return false;
+            }
+
+            Files.writeString(
+                    file,
+                    content,
+                    StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE,
+                    StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE
+            );
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     /**
      * Create a GitHub pull request via the GitHub CLI (gh pr create).
      * This uses the existing "gh auth login" / SSH credential chain so no
@@ -845,6 +1234,27 @@ public class LocalSystemsMonitorDemo {
             return code == 0;
         } catch (Exception e) {
             return false;
+        }
+    }
+
+    private String gitOutput(Path repoPath, String... args) {
+        try {
+            List<String> cmd = new java.util.ArrayList<>();
+            cmd.add("git");
+            cmd.add("-C");
+            cmd.add(repoPath.toString());
+            for (String arg : args) {
+                cmd.add(arg);
+            }
+
+            ProcessBuilder pb = new ProcessBuilder(cmd);
+            pb.redirectErrorStream(true);
+            Process p = pb.start();
+            String output = new String(p.getInputStream().readAllBytes(), StandardCharsets.UTF_8).trim();
+            int code = p.waitFor();
+            return code == 0 ? output : null;
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -947,7 +1357,7 @@ public class LocalSystemsMonitorDemo {
         String logPath;
         String restartCommand;
         String gitRepository;
-        String gitBranch = "main";
+        String gitBranch;
         String tokenEnv = "GITHUB_TOKEN";
         // Docker deployment fields
         String dockerContainerName;

@@ -1,0 +1,55 @@
+recipes:
+  - id: "NPE-001"
+    name: "Add Null Check"
+    anomalyType: "NULL_POINTER_EXCEPTION"
+    description: "Wrap null-prone access with explicit guard"
+    successRate: 0.95
+    priority: 1
+    requiresApproval: false
+    stepsCsv: "Identify null variable|Add null guard|Add safe default|Add warning log"
+
+  - id: "AIOB-001"
+    name: "Add Bounds Check"
+    anomalyType: "ARRAY_INDEX_OUT_OF_BOUNDS"
+    description: "Validate index before array access"
+    successRate: 0.92
+    priority: 1
+    requiresApproval: false
+    stepsCsv: "Identify array access|Validate index range|Fallback for invalid index"
+
+  - id: "CCE-001"
+    name: "Add Type Check"
+    anomalyType: "CLASS_CAST_EXCEPTION"
+    description: "Use instanceof before cast"
+    successRate: 0.90
+    priority: 1
+    requiresApproval: false
+    stepsCsv: "Locate cast|Add instanceof check|Handle incompatible type"
+
+  - id: "TIMEOUT-001"
+    name: "Retry with Backoff"
+    anomalyType: "CONNECTION_TIMEOUT"
+    description: "Retry transient network failures with backoff"
+    successRate: 0.85
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Wrap call with retry|Add exponential backoff|Set max retries|Add circuit breaker"
+
+  - id: "OOM-001"
+    name: "Memory Pressure Mitigation"
+    anomalyType: "OUT_OF_MEMORY_ERROR"
+    description: "Reduce pressure and optimize memory usage"
+    successRate: 0.80
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture heap signal|Reduce allocations|Tune heap settings|Monitor post-change"
+
+  - id: "GEN-UNKNOWN-001"
+    name: "Generic Safe Fallback"
+    anomalyType: "UNKNOWN_EXCEPTION"
+    description: "Safety-first fallback for unseen anomalies"
+    successRate: 0.65
+    priority: 5
+    requiresApproval: true
+    stepsCsv: "Capture context|Apply safe guard|Create PR|Request review"
+

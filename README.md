@@ -167,6 +167,22 @@ Calculated from: Metrics (40%) + Logs (35%) + Code Changes (25%)
 - **Operational** (Infrastructure) - Low health score → Scale/Restart/Rollback
 - **Logical** (Code defect) - Recent changes detected → Patch/Test/Deploy
 
+### Externalized AI Rules and Recipes
+UAC now keeps anomaly detection rules and AI fix recipes outside Java code.
+
+Catalog files:
+- `config/next/anomaly-rules.yaml` - seeded anomaly detection rules
+- `config/next/anomaly-learned.yaml` - dynamically learned anomaly rules
+- `config/next/fix-recipes.yaml` - seeded AI fix recipes
+- `config/next/fix-recipes-learned.yaml` - dynamically learned recipes
+
+Runtime behavior:
+1. Log lines are matched against `anomaly-rules.yaml`
+2. Unknown exceptions are auto-normalized (e.g. `MyCustomException` -> `MY_CUSTOM_EXCEPTION`)
+3. A new anomaly flow is created for the new type
+4. `AIDecisionEngine` chooses a recipe from external catalogs
+5. If no recipe exists, a learned fallback recipe is generated and persisted
+
 ---
 
 ## 🛠️ DEVELOPMENT WORKFLOW

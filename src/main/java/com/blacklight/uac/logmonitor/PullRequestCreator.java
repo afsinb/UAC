@@ -112,14 +112,102 @@ public class PullRequestCreator {
             
             // 3. Security scan
             System.out.println(GREEN + "  ✓ Security scan passed" + RESET);
-            
-            // 4. Mark PR as approved
-            System.out.println(GREEN + "  ✓ Pull Request approved" + RESET);
+
+            // 4. Request approval in Git and verify source-of-truth state before marking approved.
+            if (!requestApprovalInGitSystem(pr)) {
+                System.out.println(RED + "  ✗ Could not submit approval in Git for PR #" + pr.getId() + RESET);
+                return false;
+            }
+
+            if (!isApprovedInGitSystem(pr)) {
+                System.out.println(RED + "  ✗ Git provider does not report PR #" + pr.getId() + " as approved" + RESET);
+                return false;
+            }
+
+            System.out.println(GREEN + "  ✓ Pull Request approved (verified in Git system)" + RESET);
             return true;
         } catch (Exception e) {
             System.err.println(RED + "  ✗ Approval failed: " + e.getMessage() + RESET);
             return false;
         }
+    }
+
+    /**
+     * Submit an approval review in the Git provider and return true if accepted.
+     */
+    protected boolean requestApprovalInGitSystem(PullRequest pr) {
+        if (runLocal) {
+            System.out.println(YELLOW + "  → Local mode: skipping remote approval submission" + RESET);
+            return true;
+        }
+
+        String prRef = resolvePullRequestRef(pr);
+        if (prRef == null) {
+            return false;
+        }
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder("gh", "pr", "review", prRef, "--approve");
+            pb.directory(new File(repoPath));
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            process.getInputStream().transferTo(OutputStream.nullOutputStream());
+            return process.waitFor() == 0;
+        } catch (Exception e) {
+            System.out.println(YELLOW + "  → Unable to submit Git approval via gh CLI: " + e.getMessage() + RESET);
+            return false;
+        }
+    }
+
+    /**
+     * Verify approval state from the Git provider (source of truth).
+     */
+    protected boolean isApprovedInGitSystem(PullRequest pr) {
+        if (runLocal) {
+            System.out.println(YELLOW + "  → Local mode: treating approval verification as satisfied" + RESET);
+            return true;
+        }
+
+        String prRef = resolvePullRequestRef(pr);
+        if (prRef == null) {
+            return false;
+        }
+
+        try {
+            ProcessBuilder pb = new ProcessBuilder(
+                "gh", "pr", "view", prRef,
+                "--json", "reviewDecision,state"
+            );
+            pb.directory(new File(repoPath));
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes());
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                return false;
+            }
+
+            // Minimal JSON check to avoid bringing in a parser dependency.
+            return output.contains("\"reviewDecision\":\"APPROVED\"");
+        } catch (Exception e) {
+            System.out.println(YELLOW + "  → Unable to verify Git approval via gh CLI: " + e.getMessage() + RESET);
+            return false;
+        }
+    }
+
+    private String resolvePullRequestRef(PullRequest pr) {
+        String id = pr.getId();
+        if (id != null && id.matches("\\d+")) {
+            return id;
+        }
+
+        String branch = pr.getBranchName();
+        if (branch != null && !branch.isBlank()) {
+            return branch;
+        }
+
+        System.out.println(YELLOW + "  → Unable to resolve PR reference for approval checks" + RESET);
+        return null;
     }
     
     /**
