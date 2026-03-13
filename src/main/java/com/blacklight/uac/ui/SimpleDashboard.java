@@ -150,14 +150,18 @@ public class SimpleDashboard {
             server.createContext("/api/alarms", exchange -> {
                 List<Map<String, Object>> alarmsList = new ArrayList<>();
                 SelfHealingDashboard.SystemMonitor sys = getSelectedSystemMonitor();
-                System.out.println("API: /alarms requested. Selected system: " + dashboard.selectedSystem + ", resolvedId=" + (sys != null ? sys.id : "null") + ", Total alarms: " + dashboard.alarms.size());
+                if (Boolean.getBoolean("uac.verbose.dashboard")) {
+                    System.out.println("API: /alarms requested. Selected system: " + dashboard.selectedSystem + ", resolvedId=" + (sys != null ? sys.id : "null") + ", Total alarms: " + dashboard.alarms.size());
+                }
                 if (sys == null) {
                     sendJson(exchange, alarmsList);
                     return;
                 }
                 
                 for (var alarm : dashboard.alarms) {
-                    System.out.println("  Checking alarm: sysId=" + alarm.systemId + ", type=" + alarm.alarmType);
+                    if (Boolean.getBoolean("uac.verbose.dashboard")) {
+                        System.out.println("  Checking alarm: sysId=" + alarm.systemId + ", type=" + alarm.alarmType);
+                    }
                     if (alarm.systemId.equals(sys.id)) {
                         Map<String, Object> m = new HashMap<>();
                         m.put("id", alarm.id);
