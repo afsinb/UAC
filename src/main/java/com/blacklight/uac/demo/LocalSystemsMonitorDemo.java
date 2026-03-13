@@ -197,6 +197,21 @@ public class LocalSystemsMonitorDemo {
                 } else if (normalized.contains("WARN")) {
                     addAlarm(cfg, "WARNING_SIGNAL", "MEDIUM", line, null);
                 }
+
+                // UAC self-healing trigger: excessive alarm-debug noise in dashboard logs.
+                if ("uac-core".equals(cfg.name)
+                        && line.contains("Checking alarm:")
+                        && shouldTrigger(cfg, "uac-log-spam", 180)) {
+                    createCodeFixFlow(
+                            cfg,
+                            "UAC_LOG_SPAM",
+                            "MEDIUM",
+                            "Detected excessive alarm debug logging in dashboard API path",
+                            "SimpleDashboard.java",
+                            160,
+                            "Reduce noisy alarm debug logging",
+                            "PR-" + shortId());
+                }
             }
             cfg.lastLogOffset = raf.getFilePointer();
         } catch (IOException ignored) {
@@ -428,6 +443,18 @@ public class LocalSystemsMonitorDemo {
                 ensureGitRepo(candidate, cfg.gitRepository);
                 if (Files.exists(candidate.resolve(".git"))) return candidate;
             }
+
+            // 3. Development workspace fallback: /Users/<user>/development/<repo>
+            Path devCandidate = Paths.get(System.getProperty("user.home"), "development", ownerRepo[1]);
+            if (Files.isDirectory(devCandidate) && Files.exists(devCandidate.resolve(".git"))) {
+                return devCandidate;
+            }
+        }
+
+        // 4. Current working directory fallback (useful when monitoring UAC itself).
+        Path cwd = Paths.get(System.getProperty("user.dir", ".")).toAbsolutePath().normalize();
+        if (Files.exists(cwd.resolve(".git"))) {
+            return cwd;
         }
 
         return null;
@@ -524,6 +551,19 @@ public class LocalSystemsMonitorDemo {
                             "                log.warn(\"[UAC Fix] Customer is null – defaulting to prevent NullPointerException\");\n" +
                             "                request.setCustomer(\"unknown_customer\");\n" +
                             "            }"
+            );
+        } else if ("UAC_LOG_SPAM".equals(anomalyType)) {
+            updated = updated.replace(
+                    "System.out.println(\"API: /alarms requested. Selected system: \" + dashboard.selectedSystem + \", resolvedId=\" + (sys != null ? sys.id : \"null\") + \", Total alarms: \" + dashboard.alarms.size());",
+                    "if (Boolean.getBoolean(\"uac.verbose.dashboard\")) {\n" +
+                            "                    System.out.println(\"API: /alarms requested. Selected system: \" + dashboard.selectedSystem + \", resolvedId=\" + (sys != null ? sys.id : \"null\") + \", Total alarms: \" + dashboard.alarms.size());\n" +
+                            "                }"
+            );
+            updated = updated.replace(
+                    "System.out.println(\"  Checking alarm: sysId=\" + alarm.systemId + \", type=\" + alarm.alarmType);",
+                    "if (Boolean.getBoolean(\"uac.verbose.dashboard\")) {\n" +
+                            "                        System.out.println(\"  Checking alarm: sysId=\" + alarm.systemId + \", type=\" + alarm.alarmType);\n" +
+                            "                    }"
             );
         }
 
