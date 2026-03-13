@@ -1,1 +1,36 @@
 rules:
+  - id: "RULE-CACHE_SEGMENT_SKEW_EXCEPTION"
+    anomalyType: "CACHE_SEGMENT_SKEW_EXCEPTION"
+    severity: "HIGH"
+    match: "CacheSegmentSkewException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "AI-driven safe fix recommendation"
+  - id: "RULE-CACHE_SERVICE_CACHE_SEGMENT_SKEW_EXCEPTION"
+    anomalyType: "CACHE_SERVICE_CACHE_SEGMENT_SKEW_EXCEPTION"
+    severity: "HIGH"
+    match: "com.afsinb.cache.CacheService$CacheSegmentSkewException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "AI-driven safe fix recommendation"
+  - id: "RULE-ILLEGAL_STATE_EXCEPTION"
+    anomalyType: "ILLEGAL_STATE_EXCEPTION"
+    severity: "HIGH"
+    match: "java.lang.IllegalStateException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "AI-driven safe fix recommendation"
+  - id: "RULE-WORKER_POISON_BATCH_EXCEPTION"
+    anomalyType: "WORKER_POISON_BATCH_EXCEPTION"
+    severity: "HIGH"
+    match: "WorkerPoisonBatchException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "AI-driven safe fix recommendation"
+  - id: "RULE-WORKER_SERVICE_WORKER_POISON_BATCH_EXCEPTION"
+    anomalyType: "WORKER_SERVICE_WORKER_POISON_BATCH_EXCEPTION"
+    severity: "HIGH"
+    match: "com.afsinb.worker.WorkerService$WorkerPoisonBatchException"
+    sourceFile: "UnknownSource.java"
+    lineNumber: 1
+    defaultAction: "AI-driven safe fix recommendation"

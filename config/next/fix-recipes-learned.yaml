@@ -1,1 +1,41 @@
 recipes:
+  - id: "LEARNED-CACHE_SEGMENT_SKEW_EXCEPTION"
+    name: "Generic Safety Guard for CACHE_SEGMENT_SKEW_EXCEPTION"
+    anomalyType: "CACHE_SEGMENT_SKEW_EXCEPTION"
+    description: "Auto-learned recipe for exception class CacheSegmentSkewException"
+    successRate: 0.7
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture stack trace and context|Add validation/guard around failing call|Fallback to safe default|Create PR and require review"
+  - id: "LEARNED-CACHE_SERVICE_CACHE_SEGMENT_SKEW_EXCEPTION"
+    name: "Generic Safety Guard for CACHE_SERVICE_CACHE_SEGMENT_SKEW_EXCEPTION"
+    anomalyType: "CACHE_SERVICE_CACHE_SEGMENT_SKEW_EXCEPTION"
+    description: "Auto-learned recipe for exception class com.afsinb.cache.CacheService$CacheSegmentSkewException"
+    successRate: 0.7
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture stack trace and context|Add validation/guard around failing call|Fallback to safe default|Create PR and require review"
+  - id: "LEARNED-ILLEGAL_STATE_EXCEPTION"
+    name: "Generic Safety Guard for ILLEGAL_STATE_EXCEPTION"
+    anomalyType: "ILLEGAL_STATE_EXCEPTION"
+    description: "Auto-learned recipe for exception class java.lang.IllegalStateException"
+    successRate: 0.7
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture stack trace and context|Add validation/guard around failing call|Fallback to safe default|Create PR and require review"
+  - id: "LEARNED-WORKER_POISON_BATCH_EXCEPTION"
+    name: "Generic Safety Guard for WORKER_POISON_BATCH_EXCEPTION"
+    anomalyType: "WORKER_POISON_BATCH_EXCEPTION"
+    description: "Auto-learned recipe for exception class WorkerPoisonBatchException"
+    successRate: 0.7
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture stack trace and context|Add validation/guard around failing call|Fallback to safe default|Create PR and require review"
+  - id: "LEARNED-WORKER_SERVICE_WORKER_POISON_BATCH_EXCEPTION"
+    name: "Generic Safety Guard for WORKER_SERVICE_WORKER_POISON_BATCH_EXCEPTION"
+    anomalyType: "WORKER_SERVICE_WORKER_POISON_BATCH_EXCEPTION"
+    description: "Auto-learned recipe for exception class com.afsinb.worker.WorkerService$WorkerPoisonBatchException"
+    successRate: 0.7
+    priority: 2
+    requiresApproval: true
+    stepsCsv: "Capture stack trace and context|Add validation/guard around failing call|Fallback to safe default|Create PR and require review"
