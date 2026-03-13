@@ -17,7 +17,7 @@ logs:
     warning: "WARN"
 
 health_endpoint:
-  url: http://localhost:8081/health
+  url: http://localhost:8081/api/payments/health
   interval: 30s
 
 git:

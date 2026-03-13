@@ -491,7 +491,13 @@ public class LocalSystemsMonitorDemo {
         String updated = content;
 
         if ("CACHE_EVICTION_MISSING".equals(anomalyType)) {
-            // Matches CacheService.java from the Maven project (Map<String, CacheEntry>)
+            // Preferred fix for the new runtime-toggle implementation
+            updated = updated.replace(
+                    "private volatile boolean evictionEnabled = false;",
+                    "private volatile boolean evictionEnabled = true;"
+            );
+
+            // Backward-compatible fallback for the older implementation
             updated = updated.replace(
                     "private Map<String, CacheEntry> cache = new HashMap<>();",
                     "private Map<String, CacheEntry> cache = new LinkedHashMap<String, CacheEntry>(1024, 0.75f, true) {\n" +
@@ -502,7 +508,13 @@ public class LocalSystemsMonitorDemo {
                             "    };"
             );
         } else if ("NULL_POINTER_EXCEPTION".equals(anomalyType)) {
-            // Matches PaymentService.java from the Maven project (Spring-style null guard)
+            // Preferred fix for the new runtime-toggle implementation
+            updated = updated.replace(
+                    "private volatile boolean nullCustomerFailureEnabled = true;",
+                    "private volatile boolean nullCustomerFailureEnabled = false;"
+            );
+
+            // Backward-compatible fallback for the older implementation
             updated = updated.replace(
                     "if (request.getCustomer() == null) {\n" +
                             "                log.error(\"Customer object is null\");\n" +

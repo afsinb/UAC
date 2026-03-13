@@ -101,7 +101,11 @@ verify_demo_class() {
 start_demo() {
     print_info "Starting demo class: $DEMO_CLASS"
 
-    java -cp "$BUILD_DIR" "$DEMO_CLASS" > "$LOG_FILE" 2>&1 &
+    if [ "$DEMO_CLASS" = "$LOCAL_MONITOR_CLASS" ] && [ "$REAL_PR_MODE" = true ]; then
+        UAC_REAL_PR=true java -cp "$BUILD_DIR" "$DEMO_CLASS" > "$LOG_FILE" 2>&1 &
+    else
+        java -cp "$BUILD_DIR" "$DEMO_CLASS" > "$LOG_FILE" 2>&1 &
+    fi
     DEMO_PID=$!
 
     print_step "Demo started (PID: $DEMO_PID)"
@@ -145,6 +149,11 @@ show_dashboard_info() {
         echo -e "   • Attaches already-running local apps dynamically"
         echo -e "   • Polls health endpoints + tails app logs"
         echo -e "   • Generates alarms and healing flows live"
+        if [ "$REAL_PR_MODE" = true ]; then
+            echo -e "   • Real PR mode: ${YELLOW}ENABLED${NC} (git push + gh pr create)"
+        else
+            echo -e "   • Real PR mode: DISABLED (simulated PR ids)"
+        fi
     else
         echo -e "   • Working demo data mode"
         echo -e "   • Seeded systems and flows"
@@ -162,6 +171,7 @@ Usage: $0 [OPTIONS]
 OPTIONS:
     -h, --help      Show this help message
     --local-systems Run dynamic monitor using config/systems/*.yaml
+    --real-pr       Enable real PR flow in local-systems mode (sets UAC_REAL_PR=true)
     -c, --clean     Clean build directory before compiling
     -l, --logs      Show demo logs in real-time (tail -f)
     -s, --stop      Stop running demo
@@ -174,6 +184,9 @@ EXAMPLES:
 
     # Run dynamic local systems mode
     $0 --local-systems
+
+    # Run local systems mode with real PR creation
+    $0 --local-systems --real-pr
 
     # Clean build and restart
     $0 --clean --restart
@@ -235,6 +248,7 @@ main() {
     RESTART=false
     VERIFY_ONLY=false
     LOCAL_SYSTEMS=false
+    REAL_PR_MODE=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -244,6 +258,10 @@ main() {
                 ;;
             --local-systems)
                 LOCAL_SYSTEMS=true
+                shift
+                ;;
+            --real-pr)
+                REAL_PR_MODE=true
                 shift
                 ;;
             -c|--clean)
@@ -280,6 +298,10 @@ main() {
     else
         DEMO_CLASS="$WORKING_DEMO_CLASS"
         LOG_FILE="/tmp/uac-demo.log"
+        if [ "$REAL_PR_MODE" = true ]; then
+            print_warning "--real-pr is only used with --local-systems; ignoring in working demo mode"
+            REAL_PR_MODE=false
+        fi
     fi
 
     print_header
