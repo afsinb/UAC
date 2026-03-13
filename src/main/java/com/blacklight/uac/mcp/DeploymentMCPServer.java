@@ -7,20 +7,30 @@ import java.util.*;
 /**
  * DeploymentMCPServer - MCP server for deployment decisions.
  *
- * Provides AI-powered deployment strategy recommendations.
+ * Provides AI-powered deployment strategy recommendations and enforces the
+ * two safety rules introduced in developV2:
  *
- * Key enforcement rule (developV2):
- *   Every deployment path checks the PRDeploymentGate first.
- *   If the associated PR has not been APPROVED + MERGED into master,
- *   the deployment is rejected with a clear error message.
+ *   Rule 1 – PR Gate: deployment is BLOCKED unless the PR is APPROVED + MERGED.
+ *   Rule 2 – Deployment Sync: only ONE deployment runs at a time globally.
+ *            Events are submitted to DeploymentSyncManager and processed
+ *            serially with consolidation and cooldown.
+ *
+ * New capabilities (sync):
+ *   submit_deployment      – enqueue a deployment event (non-blocking)
+ *   get_active_deployment  – inspect the currently running deployment
+ *   get_deployment_queue   – inspect pending events
+ *   cancel_deployment      – cancel a queued event by eventId
+ *   get_deployment_history – last N completed/failed/cancelled events
  */
 public class DeploymentMCPServer implements MCPServer {
 
-    private static final String RED   = "\u001B[31m";
-    private static final String GREEN = "\u001B[32m";
-    private static final String RESET = "\u001B[0m";
+    private static final String RED    = "\u001B[31m";
+    private static final String GREEN  = "\u001B[32m";
+    private static final String CYAN   = "\u001B[36m";
+    private static final String RESET  = "\u001B[0m";
 
-    private final PRDeploymentGate gate = PRDeploymentGate.getInstance();
+    private final PRDeploymentGate     gate    = PRDeploymentGate.getInstance();
+    private final DeploymentSyncManager syncMgr = DeploymentSyncManager.getInstance();
 
     @Override
     public String getName() {
@@ -35,21 +45,139 @@ public class DeploymentMCPServer implements MCPServer {
             "calculate_rollback_time",
             "validate_deployment",
             "schedule_deployment",
-            "check_pr_gate"           // new: explicit gate-check capability
+            "check_pr_gate",
+            // ── Deployment sync capabilities ──
+            "submit_deployment",
+            "get_active_deployment",
+            "get_deployment_queue",
+            "cancel_deployment",
+            "get_deployment_history"
         );
     }
 
     @Override
     public MCPResponse handleRequest(MCPRequest request) {
         return switch (request.getMethod()) {
-            case "recommend_strategy"   -> recommendStrategy(request);
-            case "assess_risk"          -> assessRisk(request);
+            case "recommend_strategy"      -> recommendStrategy(request);
+            case "assess_risk"             -> assessRisk(request);
             case "calculate_rollback_time" -> calculateRollbackTime(request);
-            case "validate_deployment"  -> validateDeployment(request);
-            case "schedule_deployment"  -> scheduleDeployment(request);
-            case "check_pr_gate"        -> checkPrGate(request);
-            default -> MCPResponse.error(request.getId(), "Unknown method: " + request.getMethod());
+            case "validate_deployment"     -> validateDeployment(request);
+            case "schedule_deployment"     -> scheduleDeployment(request);
+            case "check_pr_gate"           -> checkPrGate(request);
+            // ── Sync handlers ──
+            case "submit_deployment"       -> submitDeployment(request);
+            case "get_active_deployment"   -> getActiveDeployment(request);
+            case "get_deployment_queue"    -> getDeploymentQueue(request);
+            case "cancel_deployment"       -> cancelDeployment(request);
+            case "get_deployment_history"  -> getDeploymentHistory(request);
+            default -> MCPResponse.error(request.getId(),
+                    "Unknown method: " + request.getMethod());
         };
+    }
+
+    // ── Deployment Sync handlers ──────────────────────────────────────────
+
+    /**
+     * submit_deployment – enqueue a deployment event (returns immediately).
+     *
+     * Required params: prNumber (int), pipelineId (String), environment (String)
+     * Optional params: version (String), priority (int, default 5)
+     */
+    private MCPResponse submitDeployment(MCPRequest request) {
+        Integer prNumber  = request.getIntParam("prNumber");
+        String pipelineId  = request.getStringParam("pipelineId");
+        String environment = request.getStringParam("environment");
+
+        if (prNumber == null || pipelineId == null || environment == null) {
+            return MCPResponse.error(request.getId(),
+                    "Missing required params: prNumber, pipelineId, environment");
+        }
+
+        String version  = Objects.requireNonNullElse(request.getStringParam("version"), "latest");
+        int    priority = Objects.requireNonNullElse(request.getIntParam("priority"), 5);
+
+        DeploymentEvent event = new DeploymentEvent(prNumber, pipelineId, environment,
+                                                    version, priority);
+        DeploymentSyncManager.SubmitResult result = syncMgr.submitEvent(event);
+
+        if (result.isAccepted()) {
+            System.out.println(CYAN + "[DeploymentMCPServer] 📬 Deployment event accepted: "
+                    + result.getEventId() + RESET);
+            return MCPResponse.success(request.getId(), result.toMap());
+        } else {
+            return MCPResponse.error(request.getId(), result.getMessage());
+        }
+    }
+
+    /**
+     * get_active_deployment – returns the currently running deployment event,
+     * or an empty object if no deployment is active.
+     */
+    private MCPResponse getActiveDeployment(MCPRequest request) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        syncMgr.getActiveDeployment().ifPresentOrElse(
+            evt -> {
+                result.put("active", true);
+                result.putAll(evt.toMap());
+            },
+            () -> result.put("active", false)
+        );
+        return MCPResponse.success(request.getId(), result);
+    }
+
+    /**
+     * get_deployment_queue – returns all queued (pending) deployment events.
+     */
+    private MCPResponse getDeploymentQueue(MCPRequest request) {
+        List<Map<String, Object>> queued = syncMgr.getQueueSnapshot()
+                .stream().map(DeploymentEvent::toMap).toList();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("queueSize",        queued.size());
+        result.put("isDeploymentActive", syncMgr.isDeploymentActive());
+        result.put("events",           queued);
+        syncMgr.getActiveDeployment().ifPresent(a -> result.put("activeEvent", a.toMap()));
+
+        return MCPResponse.success(request.getId(), result);
+    }
+
+    /**
+     * cancel_deployment – cancel a queued event.
+     *
+     * Required params: eventId (String)
+     * Optional params: reason (String)
+     */
+    private MCPResponse cancelDeployment(MCPRequest request) {
+        String eventId = request.getStringParam("eventId");
+        if (eventId == null) {
+            return MCPResponse.error(request.getId(), "Missing required param: eventId");
+        }
+        boolean cancelled = syncMgr.cancelEvent(eventId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("cancelled", cancelled);
+        result.put("eventId",   eventId);
+        result.put("message",   cancelled
+                ? "Event " + eventId + " cancelled."
+                : "Event " + eventId + " not found in queue (may already be active or completed).");
+        return cancelled
+                ? MCPResponse.success(request.getId(), result)
+                : MCPResponse.error(request.getId(), (String) result.get("message"));
+    }
+
+    /**
+     * get_deployment_history – returns the last N completed/failed/cancelled events.
+     *
+     * Optional params: limit (int, default 10)
+     */
+    private MCPResponse getDeploymentHistory(MCPRequest request) {
+        int limit = Objects.requireNonNullElse(request.getIntParam("limit"), 10);
+        List<Map<String, Object>> events = syncMgr.getHistory(limit)
+                .stream().map(DeploymentEvent::toMap).toList();
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("count",  events.size());
+        result.put("events", events);
+        return MCPResponse.success(request.getId(), result);
     }
 
     // ── PR Gate check ─────────────────────────────────────────────────────

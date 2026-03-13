@@ -1,5 +1,8 @@
 package com.blacklight.uac.evolver;
 
+import com.blacklight.uac.mcp.DeploymentEvent;
+import com.blacklight.uac.mcp.DeploymentSyncManager;
+
 import java.io.*;
 import java.nio.file.*;
 import java.util.concurrent.CompletableFuture;
@@ -9,14 +12,16 @@ import java.util.concurrent.CompletableFuture;
  *
  * Pipeline: clone → reproduce → patch → verify → pr
  *
- * Task dependency rules (enforced by TaskDependencyGraph):
- *   CODE_FIX must complete before PR_RAISED
- *   PR_RAISED must complete before PR_APPROVED
- *   PR_APPROVED must complete before PR_MERGED
- *   PR_MERGED must complete before DEPLOY
+ * Deployment rule (developV2):
+ *   Calling {@link #deploy(DevelopmentTask)} does NOT deploy immediately.
+ *   It submits a {@link DeploymentEvent} to the central
+ *   {@link DeploymentSyncManager}, which ensures:
+ *     – Only ONE deployment runs system-wide at any time.
+ *     – Events for the same pipeline+environment are consolidated.
+ *     – PR gate is re-verified at execution time.
  *
- * Deployment is additionally gated by PRDeploymentGate, which verifies the PR
- * is in MERGED state before allowing deployment to proceed.
+ * Task dependency rules (TaskDependencyGraph):
+ *   CODE_FIX → PR_RAISED → PR_APPROVED → PR_MERGED → DEPLOY
  */
 public class Evolver {
 
@@ -64,11 +69,23 @@ public class Evolver {
     }
 
     /**
-     * Attempt deployment of the artefact produced by this task's PR.
-     * Throws {@link PRDeploymentGate.DeploymentBlockedException} if the PR
-     * has not been approved and merged into master.
+     * Submit a deployment event for the artefact produced by this task's PR.
+     *
+     * The method:
+     *  1. Checks the TaskDependencyGraph (PR_MERGED must be complete).
+     *  2. Checks the PRDeploymentGate (PR must be in MERGED state).
+     *  3. Submits a {@link DeploymentEvent} to {@link DeploymentSyncManager}.
+     *     The event is processed asynchronously; this method returns immediately.
+     *  4. Marks DEPLOY as completed in the graph once the event is accepted.
+     *
+     * If another deployment for the same pipeline+environment is already queued,
+     * the new event consolidates (supersedes) it — the system deploys only once
+     * with the latest artefact.
+     *
+     * @throws PRDeploymentGate.DeploymentBlockedException if the dependency
+     *         graph or PR gate blocks the deployment.
      */
-    public void deploy(DevelopmentTask task) {
+    public DeploymentSyncManager.SubmitResult deploy(DevelopmentTask task) {
         String pipelineId = task.getPipelineId();
 
         // 1. Dependency graph check
@@ -78,22 +95,40 @@ public class Evolver {
                             + pipelineId + ". Ensure PR_MERGED step is complete.");
         }
 
-        // 2. PR lifecycle gate check
+        // 2. PR lifecycle gate check (fast-fail before submitting)
         deploymentGate.assertDeploymentAllowed(task.getPrNumber());
 
-        // 3. Proceed with deployment
-        System.out.println(GREEN + "[Evolver] 🚀 Deploying artefact from pipeline "
-                + pipelineId + " (PR #" + task.getPrNumber() + ")" + RESET);
+        // 3. Build and submit the deployment event (non-blocking)
+        String environment  = task.getTargetBranch() != null
+                && task.getTargetBranch().contains("prod") ? "production" : "staging";
+        DeploymentEvent event = new DeploymentEvent(
+                task.getPrNumber(),
+                pipelineId,
+                environment,
+                task.getBranch() != null ? task.getBranch() : "latest",
+                5   // default priority
+        );
 
-        // -- real deployment logic would go here --
+        System.out.println(GREEN + "[Evolver] 📬 Submitting deployment event for pipeline "
+                + pipelineId + " (PR #" + task.getPrNumber() + ") → " + environment + RESET);
 
-        // 4. Mark DEPLOY as completed in the graph
-        dependencyGraph.markCompleted(pipelineId, TaskDependencyGraph.TaskNode.DEPLOY);
-        task.setPrState(PRLifecycleState.DEPLOYED);
-        deploymentGate.markDeployed(task.getPrNumber());
+        DeploymentSyncManager.SubmitResult result =
+                DeploymentSyncManager.getInstance().submitEvent(event);
 
-        System.out.println(GREEN + "[Evolver] ✅ Deployment complete for PR #"
-                + task.getPrNumber() + RESET);
+        if (result.isAccepted()) {
+            // 4. Mark DEPLOY node in the dependency graph (event accepted = deploy initiated)
+            dependencyGraph.markCompleted(pipelineId, TaskDependencyGraph.TaskNode.DEPLOY);
+            task.setPrState(PRLifecycleState.DEPLOYED);
+
+            System.out.println(GREEN + "[Evolver] ✅ Deployment event accepted: "
+                    + result.getEventId() + " – " + result.getMessage() + RESET);
+        } else {
+            System.out.println(RED + "[Evolver] 🚫 Deployment event rejected: "
+                    + result.getMessage() + RESET);
+            throw new PRDeploymentGate.DeploymentBlockedException(result.getMessage());
+        }
+
+        return result;
     }
 
     /** Expose the dependency graph for external observers (e.g. Brain, tests). */

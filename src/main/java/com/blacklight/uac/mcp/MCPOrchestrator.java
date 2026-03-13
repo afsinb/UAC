@@ -9,8 +9,15 @@ import java.util.*;
  *
  * Registered servers (developV2):
  *   • CodeAnalysis  – static analysis, vulnerability scanning
- *   • Deployment    – strategy recommendations, PR-gate enforcement
+ *   • Deployment    – strategy recommendations, PR-gate, deployment sync
  *   • Merger        – serialised PR merge queue, conflict resolution
+ *
+ * Deployment sync guarantees (via DeploymentSyncManager):
+ *   – Only ONE deployment is active at any moment globally.
+ *   – Events for the same pipeline+environment are consolidated when
+ *     submitted while a prior event is still queued.
+ *   – Cooldown enforced between consecutive deployments.
+ *   – PR gate re-verified at execution time.
  */
 public class MCPOrchestrator {
 
@@ -129,6 +136,92 @@ public class MCPOrchestrator {
         return response.isSuccess()
                 ? (Map<String, Object>) response.getResult()
                 : Map.of("error", response.getError(), "deploymentAllowed", false);
+    }
+
+    // ── Deployment Sync ───────────────────────────────────────────────────
+
+    /**
+     * Submit a deployment event to the central DeploymentSyncManager.
+     * Returns immediately; the deployment is executed asynchronously on the
+     * single background worker, serialised with all other deployments.
+     *
+     * @param prNumber    GitHub PR number (must be in MERGED state)
+     * @param pipelineId  pipeline identifier
+     * @param environment target environment (e.g. "production", "staging")
+     * @param version     artifact version / commit SHA
+     * @param priority    dispatch priority (lower = sooner; default 5)
+     */
+    public Map<String, Object> submitDeployment(int prNumber, String pipelineId,
+                                                 String environment, String version,
+                                                 int priority) {
+        MCPServer server = servers.get("Deployment");
+        if (server == null) return Map.of("error", "Deployment server not available");
+        MCPServer.MCPRequest request = createRequest("submit_deployment", Map.of(
+                "prNumber",    prNumber,
+                "pipelineId",  pipelineId,
+                "environment", environment,
+                "version",     version,
+                "priority",    priority
+        ));
+        MCPServer.MCPResponse response = server.handleRequest(request);
+        return response.isSuccess()
+                ? (Map<String, Object>) response.getResult()
+                : Map.of("error", response.getError());
+    }
+
+    /**
+     * Returns the currently active deployment event, or {@code {"active": false}}
+     * if no deployment is in progress.
+     */
+    public Map<String, Object> getActiveDeployment() {
+        MCPServer server = servers.get("Deployment");
+        if (server == null) return Map.of("error", "Deployment server not available");
+        MCPServer.MCPRequest request = createRequest("get_active_deployment", Map.of());
+        MCPServer.MCPResponse response = server.handleRequest(request);
+        return response.isSuccess()
+                ? (Map<String, Object>) response.getResult()
+                : Map.of("error", response.getError());
+    }
+
+    /**
+     * Returns a snapshot of all pending deployment events in the queue.
+     */
+    public Map<String, Object> getDeploymentQueue() {
+        MCPServer server = servers.get("Deployment");
+        if (server == null) return Map.of("error", "Deployment server not available");
+        MCPServer.MCPRequest request = createRequest("get_deployment_queue", Map.of());
+        MCPServer.MCPResponse response = server.handleRequest(request);
+        return response.isSuccess()
+                ? (Map<String, Object>) response.getResult()
+                : Map.of("error", response.getError());
+    }
+
+    /**
+     * Cancel a queued deployment event by event ID.
+     */
+    public Map<String, Object> cancelDeployment(String eventId) {
+        MCPServer server = servers.get("Deployment");
+        if (server == null) return Map.of("error", "Deployment server not available");
+        MCPServer.MCPRequest request = createRequest("cancel_deployment",
+                Map.of("eventId", eventId));
+        MCPServer.MCPResponse response = server.handleRequest(request);
+        return response.isSuccess()
+                ? (Map<String, Object>) response.getResult()
+                : Map.of("error", response.getError());
+    }
+
+    /**
+     * Returns the last {@code limit} completed/failed/cancelled deployment events.
+     */
+    public Map<String, Object> getDeploymentHistory(int limit) {
+        MCPServer server = servers.get("Deployment");
+        if (server == null) return Map.of("error", "Deployment server not available");
+        MCPServer.MCPRequest request = createRequest("get_deployment_history",
+                Map.of("limit", limit));
+        MCPServer.MCPResponse response = server.handleRequest(request);
+        return response.isSuccess()
+                ? (Map<String, Object>) response.getResult()
+                : Map.of("error", response.getError());
     }
 
     // ── Merger ────────────────────────────────────────────────────────────

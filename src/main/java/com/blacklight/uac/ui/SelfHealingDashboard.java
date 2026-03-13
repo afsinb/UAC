@@ -117,6 +117,10 @@ public class SelfHealingDashboard {
         public List<FlowStep> steps;
         public FlowStatus status;
         public String health; // CRITICAL, WARNING, HEALTHY
+        // Optional UI metadata used by SimpleDashboard for dependency-aware visualization.
+        public String workflowStatus; // COMPLETED, WAITING_DEPENDENCIES, FAILED, RUNNING
+        public List<Map<String, Object>> deploymentDependencies;
+        public Map<String, Object> journey;
         
         public HealingFlow(String systemId, String type) {
             this.id = UUID.randomUUID().toString();
@@ -125,6 +129,9 @@ public class SelfHealingDashboard {
             this.createdAt = System.currentTimeMillis();
             this.steps = new ArrayList<>();
             this.status = FlowStatus.INITIATED;
+            this.workflowStatus = "RUNNING";
+            this.deploymentDependencies = new ArrayList<>();
+            this.journey = new HashMap<>();
         }
     }
     

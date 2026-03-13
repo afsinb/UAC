@@ -93,6 +93,7 @@ public class RealTimeDashboard {
             server.createContext("/api/applications/select", new ApplicationSelectHandler());
             server.createContext("/api/fix-workflows", new FixWorkflowsHandler());
             server.createContext("/api/workflow-details", new WorkflowDetailsHandler());
+            server.createContext("/api/demo/workflow", new DemoWorkflowHandler());
             server.createContext("/api/alarms", new AlarmsHandler());
             server.createContext("/api/project-stats", new ProjectStatsHandler());
             server.createContext("/api/mcp/actions", new McpActionsHandler());
@@ -193,6 +194,16 @@ public class RealTimeDashboard {
         workflow.put("startTime", System.currentTimeMillis());
         workflow.put("application", selectedApplication);
         workflow.put("steps", new ArrayList<>());
+        workflow.put("journey", createJourney(
+            success ? "COMPLETED" : "FAILED",
+            System.currentTimeMillis(),
+            success ? System.currentTimeMillis() + 50 : null,
+            success ? System.currentTimeMillis() + 100 : null,
+            "Action flow started",
+            "Fix action: " + type,
+            success ? "Deployment completed" : "Deployment skipped",
+            Collections.emptyList()
+        ));
         fixWorkflows.put(workflowId, workflow);
         
         if (actionHistory.size() > 50) {
@@ -344,9 +355,26 @@ public class RealTimeDashboard {
         workflow.put("id", workflowId);
         workflow.put("type", anomalyType);
         workflow.put("target", target);
-        workflow.put("status", success ? "COMPLETED" : "FAILED");
+        String workflowStatus = success ? "COMPLETED"
+            : (anomalyType.contains("CODE") ? "WAITING_DEPENDENCIES" : "FAILED");
+        workflow.put("status", workflowStatus);
         workflow.put("startTime", baseTime);
         workflow.put("application", selectedApplication);
+
+        List<Map<String, Object>> deploymentDependencies = new ArrayList<>();
+        if (anomalyType.contains("CODE")) {
+            Map<String, Object> dep1 = new HashMap<>();
+            dep1.put("id", "PR-" + workflowId.substring(0, 6));
+            dep1.put("title", "Core fix PR");
+            dep1.put("status", success ? "MERGED" : "APPROVED");
+            deploymentDependencies.add(dep1);
+
+            Map<String, Object> dep2 = new HashMap<>();
+            dep2.put("id", "PR-" + workflowId.substring(6, 12));
+            dep2.put("title", "Schema compatibility PR");
+            dep2.put("status", success ? "MERGED" : "OPEN");
+            deploymentDependencies.add(dep2);
+        }
         
         // Detailed steps for each MCP server
         List<Map<String, Object>> detailedSteps = new ArrayList<>();
@@ -412,6 +440,19 @@ public class RealTimeDashboard {
             (anomalyType.contains("CODE") ? "DevelopmentMCP" : "HealingMCP") + ": Fix applied",
             "DeploymentMCP: " + (success ? "Deployed" : "Rolled back")
         ));
+        workflow.put("journey", createJourney(
+            workflowStatus,
+            baseTime,
+            baseTime + 300,
+            success ? baseTime + 400 : null,
+            "Anomaly detected by TelemetryMCP",
+            anomalyType.contains("CODE") ? "Code patch generated" : "Operational fix executed",
+            success ? "Deployment completed via DeploymentMCP" : "Deployment blocked until dependencies are merged",
+            deploymentDependencies
+        ));
+        if (!deploymentDependencies.isEmpty()) {
+            workflow.put("deploymentDependencies", deploymentDependencies);
+        }
         fixWorkflows.put(workflowId, workflow);
         
         // Trim history if needed
@@ -420,7 +461,8 @@ public class RealTimeDashboard {
         }
         
         addEvent(success ? "success" : "error", 
-            String.format("Healing workflow: %s on %s - %s [ID: %s]", anomalyType, target, success ? "SUCCESS" : "FAILED", workflowId));
+            String.format("Healing workflow: %s on %s - %s [ID: %s]", anomalyType, target,
+                success ? "SUCCESS" : ("WAITING_DEPENDENCIES".equals(workflowStatus) ? "WAITING_DEPENDENCIES" : "FAILED"), workflowId));
     }
     
     public void addApplication(String appName) {
@@ -581,7 +623,25 @@ public class RealTimeDashboard {
     private class FixWorkflowsHandler implements HttpHandler {
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            List<Map<String, Object>> workflows = new ArrayList<>(fixWorkflows.values());
+            List<Map<String, Object>> workflows = new ArrayList<>();
+            for (Map<String, Object> wf : fixWorkflows.values()) {
+                Map<String, Object> copy = new HashMap<>(wf);
+                if (!copy.containsKey("journey")) {
+                    Long start = (Long) copy.getOrDefault("startTime", System.currentTimeMillis());
+                    String status = (String) copy.getOrDefault("status", "PENDING");
+                    copy.put("journey", createJourney(
+                        status,
+                        start,
+                        "COMPLETED".equals(status) ? start + 150 : null,
+                        "COMPLETED".equals(status) ? start + 300 : null,
+                        "Anomaly signal recorded",
+                        "Fix action in progress",
+                        "Deployment pending",
+                        (List<Map<String, Object>>) copy.getOrDefault("deploymentDependencies", Collections.emptyList())
+                    ));
+                }
+                workflows.add(copy);
+            }
             // Sort by start time descending
             workflows.sort((a, b) -> Long.compare((Long)b.getOrDefault("startTime", 0L), 
                                                    (Long)a.getOrDefault("startTime", 0L)));
@@ -654,8 +714,107 @@ public class RealTimeDashboard {
                 return;
             }
             
-            sendJson(exchange, toJson(fixWorkflows.get(workflowId)));
+            Map<String, Object> workflow = new HashMap<>(fixWorkflows.get(workflowId));
+            if (!workflow.containsKey("journey")) {
+                Long start = (Long) workflow.getOrDefault("startTime", System.currentTimeMillis());
+                String status = (String) workflow.getOrDefault("status", "PENDING");
+                workflow.put("journey", createJourney(
+                    status,
+                    start,
+                    "COMPLETED".equals(status) ? start + 150 : null,
+                    "COMPLETED".equals(status) ? start + 300 : null,
+                    "Anomaly signal recorded",
+                    "Fix action in progress",
+                    "Deployment pending",
+                    (List<Map<String, Object>>) workflow.getOrDefault("deploymentDependencies", Collections.emptyList())
+                ));
+            }
+            sendJson(exchange, toJson(workflow));
         }
+    }
+
+    private class DemoWorkflowHandler implements HttpHandler {
+        @Override
+        public void handle(HttpExchange exchange) throws IOException {
+            if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                exchange.sendResponseHeaders(405, -1);
+                return;
+            }
+
+            String anomalyType = "CODE_DEPENDENCY_BLOCK";
+            String target = "PaymentService";
+            boolean success = false;
+
+            String query = exchange.getRequestURI().getQuery();
+            if (query != null) {
+                for (String param : query.split("&")) {
+                    if (param.startsWith("anomaly=")) anomalyType = param.substring(8);
+                    if (param.startsWith("target=")) target = param.substring(7);
+                    if (param.startsWith("success=")) success = Boolean.parseBoolean(param.substring(8));
+                }
+            }
+
+            recordHealingWorkflow(anomalyType, target, success);
+
+            Map<String, Object> response = new HashMap<>();
+            response.put("ok", true);
+            response.put("anomaly", anomalyType);
+            response.put("target", target);
+            response.put("success", success);
+            response.put("message", "Sample workflow generated");
+            sendJson(exchange, toJson(response));
+        }
+    }
+
+    private Map<String, Object> createJourney(String workflowStatus,
+                                              Long anomalyAt,
+                                              Long fixAt,
+                                              Long deploymentAt,
+                                              String anomalySummary,
+                                              String fixSummary,
+                                              String deploymentSummary,
+                                              List<Map<String, Object>> deploymentDependencies) {
+        String status = workflowStatus == null ? "PENDING" : workflowStatus;
+        List<Map<String, Object>> deps = deploymentDependencies == null
+            ? Collections.emptyList() : deploymentDependencies;
+        long waitingCount = deps.stream()
+            .filter(dep -> {
+                Object depStatus = dep.get("status");
+                if (depStatus == null) return true;
+                String v = depStatus.toString();
+                return !("MERGED".equals(v) || "DEPLOYED".equals(v) || "COMPLETED".equals(v));
+            })
+            .count();
+
+        Map<String, Object> anomaly = new HashMap<>();
+        anomaly.put("key", "ANOMALY");
+        anomaly.put("label", "Anomaly Detection");
+        anomaly.put("status", anomalyAt != null ? "COMPLETED" : "PENDING");
+        anomaly.put("timestamp", anomalyAt);
+        anomaly.put("summary", anomalySummary);
+
+        Map<String, Object> fix = new HashMap<>();
+        fix.put("key", "FIX");
+        fix.put("label", "Fix Applied");
+        fix.put("status", fixAt != null ? "COMPLETED" : ("FAILED".equals(status) ? "FAILED" : "PENDING"));
+        fix.put("timestamp", fixAt);
+        fix.put("summary", fixSummary);
+
+        Map<String, Object> deployment = new HashMap<>();
+        deployment.put("key", "DEPLOYMENT");
+        deployment.put("label", "Deployment");
+        deployment.put("status", deploymentAt != null ? "COMPLETED"
+            : (waitingCount > 0 ? "WAITING_DEPENDENCIES"
+            : ("FAILED".equals(status) ? "FAILED" : "PENDING")));
+        deployment.put("timestamp", deploymentAt);
+        deployment.put("summary", deploymentSummary);
+        deployment.put("waitingCount", waitingCount);
+        deployment.put("dependencies", deps);
+
+        Map<String, Object> journey = new HashMap<>();
+        journey.put("flowStatus", status);
+        journey.put("stages", Arrays.asList(anomaly, fix, deployment));
+        return journey;
     }
     
     private class ProjectStatsHandler implements HttpHandler {

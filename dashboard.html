@@ -73,6 +73,19 @@
         .phase.completed { border: 2px solid #22c55e; }
         .phase-name { font-weight: bold; margin-bottom: 5px; }
         .phase-status { color: #94a3b8; }
+        .flow-list { max-height: 280px; overflow-y: auto; display: grid; gap: 10px; }
+        .flow-item { background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px; }
+        .flow-header { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 8px; }
+        .flow-id { color: #38bdf8; font-family: monospace; }
+        .flow-status { font-weight: 600; }
+        .flow-status.completed { color: #22c55e; }
+        .flow-status.failed { color: #ef4444; }
+        .flow-status.running { color: #eab308; }
+        .flow-journey { display: flex; gap: 8px; }
+        .flow-stage { flex: 1; padding: 8px; border-radius: 6px; border: 1px solid #334155; font-size: 11px; }
+        .flow-stage.completed { border-color: #22c55e; background: #22c55e10; }
+        .flow-stage.failed { border-color: #ef4444; background: #ef444410; }
+        .flow-stage.pending { border-color: #64748b; background: #0f172a; }
     </style>
 </head>
 <body>
@@ -225,6 +238,14 @@
                 </div>
             </div>
 
+            <!-- Flow Visualization Card -->
+            <div class="card" style="grid-column: span 2;">
+                <h2>Anomaly -> Fix -> Deployment Flows</h2>
+                <div class="flow-list" id="flowList">
+                    <div style="color: #64748b; font-size: 12px;">No flow yet. Click Simulate Activity.</div>
+                </div>
+            </div>
+
             <!-- Recent Actions Card -->
             <div class="card">
                 <h2>Recent Healing Actions</h2>
@@ -290,6 +311,37 @@
                 (memory < 70 ? 'progress-green' : (memory < 90 ? 'progress-yellow' : 'progress-red'));
         }
 
+        function renderFlowItem(flow) {
+            const stageHtml = flow.stages.map(stage => {
+                const stageClass = stage.status.toLowerCase();
+                const icon = stage.status === 'COMPLETED' ? '✓' : (stage.status === 'FAILED' ? '✗' : '○');
+                return `<div class="flow-stage ${stageClass}">
+                    <div style="color:#94a3b8; text-transform: uppercase; font-size: 10px;">${stage.label}</div>
+                    <div style="margin-top: 4px; color:#e2e8f0;">${icon} ${stage.status}</div>
+                </div>`;
+            }).join('');
+
+            return `<div class="flow-item">
+                <div class="flow-header">
+                    <span class="flow-id">${flow.id}</span>
+                    <span class="flow-status ${flow.status.toLowerCase()}">${flow.status}</span>
+                </div>
+                <div class="flow-journey">${stageHtml}</div>
+            </div>`;
+        }
+
+        function appendFlow(flow) {
+            const list = document.getElementById('flowList');
+            const current = list.innerHTML.includes('No flow yet') ? '' : list.innerHTML;
+            list.innerHTML = renderFlowItem(flow) + current;
+
+            // keep only latest 8
+            const nodes = list.querySelectorAll('.flow-item');
+            for (let i = 8; i < nodes.length; i++) {
+                nodes[i].remove();
+            }
+        }
+
         function simulateActivity() {
             updateTimestamp();
 
@@ -309,6 +361,28 @@
                 setTimeout(() => addEvent('info', 'Hunter Alpha generating fix...'), 1000);
                 setTimeout(() => addEvent('success', 'Fix applied successfully'), 1500);
                 setTimeout(() => updateHealth(0.85), 2000);
+
+                const flowId = 'FLOW-' + Date.now().toString().slice(-6);
+                appendFlow({
+                    id: flowId,
+                    status: 'COMPLETED',
+                    stages: [
+                        { label: 'Anomaly', status: 'COMPLETED' },
+                        { label: 'Fix', status: 'COMPLETED' },
+                        { label: 'Deployment', status: 'COMPLETED' }
+                    ]
+                });
+            } else {
+                const flowId = 'FLOW-' + Date.now().toString().slice(-6);
+                appendFlow({
+                    id: flowId,
+                    status: 'RUNNING',
+                    stages: [
+                        { label: 'Anomaly', status: 'COMPLETED' },
+                        { label: 'Fix', status: 'PENDING' },
+                        { label: 'Deployment', status: 'PENDING' }
+                    ]
+                });
             }
         }
 

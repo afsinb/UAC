@@ -120,6 +120,18 @@
             padding: 6px 10px; margin: 4px 0; background: #1e293b; 
             border-radius: 4px; font-size: 12px; display: flex; justify-content: space-between;
         }
+        .journey-strip { display: flex; gap: 8px; margin-top: 10px; }
+        .journey-stage {
+            flex: 1; background: #0a0f1a; border: 1px solid #2d3748; border-radius: 8px;
+            padding: 8px; font-size: 11px;
+        }
+        .journey-stage.completed { border-color: #22c55e; background: #22c55e10; }
+        .journey-stage.waiting { border-color: #f59e0b; background: #f59e0b15; }
+        .journey-stage.failed { border-color: #ef4444; background: #ef444410; }
+        .journey-stage.pending { border-color: #64748b; background: #0a0f1a; }
+        .journey-label { color: #94a3b8; font-size: 10px; text-transform: uppercase; }
+        .journey-value { color: #e2e8f0; font-weight: 600; margin-top: 4px; }
+        .journey-time { color: #64748b; margin-top: 3px; font-size: 10px; }
         .step-pending { border-left: 3px solid #64748b; }
         .step-running { border-left: 3px solid #3b82f6; }
         .step-completed { border-left: 3px solid #22c55e; }
@@ -712,20 +724,50 @@
                 list.innerHTML = '<div style="color: #64748b;">No workflows yet</div>';
                 return;
             }
+
+            const renderJourneyStrip = (journey) => {
+                const stages = (journey && Array.isArray(journey.stages)) ? journey.stages : [];
+                if (stages.length === 0) {
+                    return '<div style="font-size: 11px; color: #64748b; margin-top: 10px;">No journey data yet</div>';
+                }
+
+                return `<div class="journey-strip">${stages.map(s => {
+                    const stageStatus = (s.status || 'PENDING').toUpperCase();
+                    const cls = stageStatus === 'COMPLETED' ? 'completed'
+                        : (stageStatus === 'FAILED' ? 'failed'
+                        : (stageStatus === 'WAITING_DEPENDENCIES' ? 'waiting' : 'pending'));
+                    const icon = stageStatus === 'COMPLETED' ? '✓'
+                        : (stageStatus === 'FAILED' ? '✗'
+                        : (stageStatus === 'WAITING_DEPENDENCIES' ? '⏳' : '○'));
+                    const time = s.timestamp ? new Date(s.timestamp).toLocaleTimeString() : '-';
+                    const waitingText = stageStatus === 'WAITING_DEPENDENCIES' && (s.waitingCount || 0) > 0
+                        ? `<div style="margin-top: 4px; color: #fbbf24; font-size: 10px;">waiting for ${s.waitingCount} PR(s)</div>`
+                        : '';
+                    return `<div class="journey-stage ${cls}">
+                        <div class="journey-label">${s.label || s.key || 'Stage'}</div>
+                        <div class="journey-value">${icon} ${stageStatus}</div>
+                        <div class="journey-time">${time}</div>
+                        ${waitingText}
+                    </div>`;
+                }).join('')}</div>`;
+            };
+
             list.innerHTML = workflows.slice(0, 10).map(w => {
                 const time = new Date(w.startTime || 0).toLocaleTimeString();
                 const statusColor = w.status === 'COMPLETED' ? '#22c55e' : 
-                                   w.status === 'RUNNING' ? '#3b82f6' : '#ef4444';
+                                   w.status === 'RUNNING' ? '#3b82f6' :
+                                   w.status === 'WAITING_DEPENDENCIES' ? '#f59e0b' : '#ef4444';
                 const isCompleted = w.status === 'COMPLETED';
                 const isFailed = w.status === 'FAILED';
-                
+                const isWaiting = w.status === 'WAITING_DEPENDENCIES';
+
                 // Determine phase status based on workflow status
                 const phases = [
                     { name: 'SIGNAL', desc: 'Detect', status: isCompleted || isFailed ? 'completed' : 'completed' },
                     { name: 'CONTEXT', desc: 'Analyze', status: isCompleted || isFailed ? 'completed' : 'completed' },
-                    { name: 'HYPOTHESIS', desc: 'AI Triage', status: isCompleted ? 'completed' : (isFailed ? 'failed' : 'running') },
-                    { name: 'EXECUTION', desc: 'Fix', status: isCompleted ? 'completed' : (isFailed ? 'failed' : 'pending') },
-                    { name: 'VALIDATION', desc: 'Verify', status: isCompleted ? 'completed' : 'pending' }
+                    { name: 'HYPOTHESIS', desc: 'AI Triage', status: isCompleted || isWaiting ? 'completed' : (isFailed ? 'failed' : 'running') },
+                    { name: 'EXECUTION', desc: 'Fix', status: isCompleted || isWaiting ? 'completed' : (isFailed ? 'failed' : 'pending') },
+                    { name: 'VALIDATION', desc: 'Verify', status: isCompleted ? 'completed' : (isWaiting ? 'running' : 'pending') }
                 ];
                 
                 const phaseHtml = phases.map(p => {
@@ -753,6 +795,7 @@
                     <div style="color: #64748b; font-size: 11px; margin-top: 4px;">
                         App: ${w.application || 'default'} | ${time}
                     </div>
+                    ${renderJourneyStrip(w.journey)}
                     <div class="workflow-steps" style="margin-top: 10px;">
                         <div style="font-size: 11px; color: #94a3b8; margin-bottom: 6px;">5-Phase Loop:</div>
                         ${phaseHtml}
@@ -785,7 +828,37 @@
                 
                 // Use detailedSteps from workflow if available, otherwise fall back to static descriptions
                 const detailedSteps = workflow.detailedSteps || [];
-                
+                const journeyStages = (workflow.journey && Array.isArray(workflow.journey.stages)) ? workflow.journey.stages : [];
+
+                const journeyHtml = journeyStages.length > 0
+                    ? `<div style="margin-bottom: 20px;">
+                        <h3 style="color: #3b82f6; margin-bottom: 10px;">Flow Journey: Anomaly → Fix → Deployment</h3>
+                        <div class="journey-strip">${journeyStages.map(stage => {
+                            const stageStatus = (stage.status || 'PENDING').toUpperCase();
+                            const cls = stageStatus === 'COMPLETED' ? 'completed'
+                                : (stageStatus === 'FAILED' ? 'failed'
+                                : (stageStatus === 'WAITING_DEPENDENCIES' ? 'waiting' : 'pending'));
+                            const icon = stageStatus === 'COMPLETED' ? '✓'
+                                : (stageStatus === 'FAILED' ? '✗'
+                                : (stageStatus === 'WAITING_DEPENDENCIES' ? '⏳' : '○'));
+                            const time = stage.timestamp ? new Date(stage.timestamp).toLocaleString() : '-';
+                            const deps = Array.isArray(stage.dependencies) ? stage.dependencies : [];
+                            const depHtml = stageStatus === 'WAITING_DEPENDENCIES' && deps.length > 0
+                                ? `<div style="margin-top: 8px; color: #fbbf24; font-size: 10px;">
+                                    waiting for: ${deps.map(d => `${d.id || 'PR'} (${d.status || 'UNKNOWN'})`).join(', ')}
+                                   </div>`
+                                : '';
+                            return `<div class="journey-stage ${cls}">
+                                <div class="journey-label">${stage.label || stage.key || 'Stage'}</div>
+                                <div class="journey-value">${icon} ${stageStatus}</div>
+                                <div class="journey-time">${time}</div>
+                                <div style="margin-top: 6px; color: #94a3b8; font-size: 10px;">${stage.summary || ''}</div>
+                                ${depHtml}
+                            </div>`;
+                        }).join('')}</div>
+                    </div>`
+                    : '';
+
                 const phasesHtml = detailedSteps.length > 0 
                     ? detailedSteps.map((step, idx) => {
                         const isCompleted = workflow.status === 'COMPLETED' || idx < 2;
@@ -876,7 +949,9 @@
                             <div style="color: #94a3b8;">${new Date(workflow.startTime || 0).toLocaleString()}</div>
                         </div>
                     </div>
-                    
+
+                    ${journeyHtml}
+
                     <h3 style="color: #3b82f6; margin-bottom: 15px;">5-Phase Loop Details</h3>
                     ${phasesHtml}
                     

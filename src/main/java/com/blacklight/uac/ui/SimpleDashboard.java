@@ -105,10 +105,14 @@ public class SimpleDashboard {
                         Map<String, Object> m = new HashMap<>();
                         m.put("id", flow.id);
                         m.put("type", flow.type);
-                        m.put("status", flow.status.toString());
+                        m.put("status", flow.workflowStatus != null ? flow.workflowStatus : flow.status.toString());
                         m.put("createdAt", flow.createdAt);
                         m.put("anomaly", flow.anomaly != null ? flow.anomaly.anomalyType : "Unknown");
                         m.put("stepCount", flow.steps.size());
+                        if (flow.journey != null && flow.journey.containsKey("stages")) {
+                            m.put("journey", flow.journey);
+                        }
+                        m.put("deploymentDependencies", flow.deploymentDependencies != null ? flow.deploymentDependencies : List.of());
                         flows.add(m);
                     }
                 }
@@ -125,6 +129,72 @@ public class SimpleDashboard {
                 }
                 exchange.sendResponseHeaders(404, 0);
                 exchange.close();
+            });
+
+            server.createContext("/api/flows/demo", exchange -> {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    exchange.sendResponseHeaders(405, 0);
+                    exchange.close();
+                    return;
+                }
+                SelfHealingDashboard.SystemMonitor sys = getSelectedSystemMonitor();
+                if (sys == null) {
+                    sendJson(exchange, Map.of("ok", false, "error", "No selected system"));
+                    return;
+                }
+
+                SelfHealingDashboard.HealingFlow flow = new SelfHealingDashboard.HealingFlow(sys.id, "CODE_FIX");
+                flow.anomaly = new SelfHealingDashboard.AnomalyDetails();
+                flow.anomaly.anomalyType = "CODE_DEPENDENCY_BLOCK";
+                flow.anomaly.severity = "HIGH";
+                flow.anomaly.message = "Deployment is blocked until dependent PRs are merged";
+                flow.anomaly.detectedAt = System.currentTimeMillis();
+
+                SelfHealingDashboard.FlowStep s1 = new SelfHealingDashboard.FlowStep("SIGNAL", "Anomaly detected", "TelemetryMCP");
+                s1.status = "COMPLETED";
+                SelfHealingDashboard.FlowStep s2 = new SelfHealingDashboard.FlowStep("EXECUTION", "Patch generated and PR opened", "DevelopmentMCP");
+                s2.status = "COMPLETED";
+                SelfHealingDashboard.FlowStep s3 = new SelfHealingDashboard.FlowStep("DEPLOY", "Deployment queued", "DeploymentMCP");
+                s3.status = "PENDING";
+                flow.steps.add(s1);
+                flow.steps.add(s2);
+                flow.steps.add(s3);
+
+                List<Map<String, Object>> deps = new ArrayList<>();
+                deps.add(new HashMap<>(Map.of("id", "PR-2341", "title", "Core fix PR", "status", "APPROVED")));
+                deps.add(new HashMap<>(Map.of("id", "PR-2342", "title", "DB migration PR", "status", "OPEN")));
+                flow.deploymentDependencies = deps;
+                flow.workflowStatus = "WAITING_DEPENDENCIES";
+
+                Map<String, Object> anomaly = new LinkedHashMap<>();
+                anomaly.put("key", "ANOMALY");
+                anomaly.put("label", "Anomaly Detection");
+                anomaly.put("status", "COMPLETED");
+                anomaly.put("timestamp", flow.createdAt);
+                anomaly.put("summary", "Anomaly detected");
+
+                Map<String, Object> fix = new LinkedHashMap<>();
+                fix.put("key", "FIX");
+                fix.put("label", "Fix Applied");
+                fix.put("status", "COMPLETED");
+                fix.put("timestamp", flow.createdAt + 150);
+                fix.put("summary", "Patch and PR prepared");
+
+                Map<String, Object> deploy = new LinkedHashMap<>();
+                deploy.put("key", "DEPLOYMENT");
+                deploy.put("label", "Deployment");
+                deploy.put("status", "WAITING_DEPENDENCIES");
+                deploy.put("timestamp", null);
+                deploy.put("summary", "Waiting for PR dependencies");
+                deploy.put("waitingCount", 2);
+                deploy.put("dependencies", deps);
+
+                flow.journey = new LinkedHashMap<>();
+                flow.journey.put("flowStatus", "WAITING_DEPENDENCIES");
+                flow.journey.put("stages", List.of(anomaly, fix, deploy));
+
+                dashboard.addHealingFlow(flow);
+                sendJson(exchange, Map.of("ok", true, "flowId", flow.id));
             });
 
             server.createContext("/api/alarms/", exchange -> {
@@ -187,7 +257,7 @@ public class SimpleDashboard {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id", flow.id);
         m.put("type", flow.type);
-        m.put("status", flow.status != null ? flow.status.toString() : "UNKNOWN");
+        m.put("status", flow.workflowStatus != null ? flow.workflowStatus : (flow.status != null ? flow.status.toString() : "UNKNOWN"));
         m.put("createdAt", flow.createdAt);
 
         if (flow.anomaly != null) {
@@ -213,6 +283,45 @@ public class SimpleDashboard {
             steps.add(s);
         }
         m.put("steps", steps);
+        m.put("deploymentDependencies", flow.deploymentDependencies != null ? new ArrayList<>(flow.deploymentDependencies) : new ArrayList<>());
+        if (flow.journey != null && !flow.journey.isEmpty()) {
+            m.put("journey", flow.journey);
+        } else {
+            // Backfill for legacy flows that don't include explicit journey metadata.
+            List<Map<String, Object>> deps = flow.deploymentDependencies != null ? flow.deploymentDependencies : List.of();
+            int waiting = 0;
+            for (Map<String, Object> dep : deps) {
+                String status = String.valueOf(dep.getOrDefault("status", "OPEN"));
+                if (!("MERGED".equals(status) || "DEPLOYED".equals(status) || "COMPLETED".equals(status))) waiting++;
+            }
+            Map<String, Object> anomaly = new LinkedHashMap<>();
+            anomaly.put("key", "ANOMALY");
+            anomaly.put("label", "Anomaly Detection");
+            anomaly.put("status", "COMPLETED");
+            anomaly.put("timestamp", flow.createdAt);
+            anomaly.put("summary", "Anomaly detected");
+
+            Map<String, Object> fix = new LinkedHashMap<>();
+            fix.put("key", "FIX");
+            fix.put("label", "Fix Applied");
+            fix.put("status", "COMPLETED");
+            fix.put("timestamp", flow.createdAt + 200);
+            fix.put("summary", "Fix execution completed");
+
+            Map<String, Object> deploy = new LinkedHashMap<>();
+            deploy.put("key", "DEPLOYMENT");
+            deploy.put("label", "Deployment");
+            deploy.put("status", waiting > 0 ? "WAITING_DEPENDENCIES" : "COMPLETED");
+            deploy.put("timestamp", waiting > 0 ? null : flow.createdAt + 400);
+            deploy.put("summary", waiting > 0 ? "Waiting for PR dependencies" : "Deployment completed");
+            deploy.put("waitingCount", waiting);
+            deploy.put("dependencies", deps);
+
+            Map<String, Object> journey = new LinkedHashMap<>();
+            journey.put("flowStatus", waiting > 0 ? "WAITING_DEPENDENCIES" : "COMPLETED");
+            journey.put("stages", List.of(anomaly, fix, deploy));
+            m.put("journey", journey);
+        }
         return m;
     }
 
@@ -286,10 +395,17 @@ public class SimpleDashboard {
 .badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600;margin-left:6px}
 .badge.code-fix{background:#0969da33;color:#0969da}
 .badge.operational-fix{background:#d2992233;color:#d29922}
+.badge.waiting{background:#f59e0b33;color:#f59e0b}
 .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.5);align-items:center;justify-content:center}
 .modal.active{display:flex}
 .modal-content{background:#1a1f26;border:1px solid #2d333b;border-radius:8px;padding:20px;width:90%;max-width:800px;max-height:80vh;overflow-y:auto;position:relative}
 .modal-close{position:absolute;right:15px;top:15px;font-size:24px;cursor:pointer;color:#7d8590}
+.journey-row{display:flex;gap:8px;margin-top:8px}
+.journey-stage{flex:1;background:#0f1419;border:1px solid #2d333b;border-radius:6px;padding:8px}
+.journey-stage.completed{border-color:#3fb950;background:#3fb95011}
+.journey-stage.failed{border-color:#f85149;background:#f8514911}
+.journey-stage.waiting{border-color:#f59e0b;background:#f59e0b11}
+.journey-stage.pending{border-color:#7d8590;background:#0f1419}
 </style></head><body>
 <div class="container">
 <div class="sidebar">
@@ -402,17 +518,32 @@ async function updateDashboard() {
 
 function updateFlowsView() {
     const filtered = getFilteredFlows();
+
+    const journeyStrip = (flow) => {
+        const stages = flow && flow.journey && Array.isArray(flow.journey.stages) ? flow.journey.stages : [];
+        if (!stages.length) return '';
+        return `<div class="journey-row">${stages.map(s => {
+            const st = (s.status || 'PENDING').toUpperCase();
+            const cls = st === 'COMPLETED' ? 'completed' : (st === 'FAILED' ? 'failed' : (st === 'WAITING_DEPENDENCIES' ? 'waiting' : 'pending'));
+            const icon = st === 'COMPLETED' ? '✓' : (st === 'FAILED' ? '✗' : (st === 'WAITING_DEPENDENCIES' ? '⏳' : '○'));
+            const waiting = st === 'WAITING_DEPENDENCIES' && (s.waitingCount || 0) > 0 ? ` (${s.waitingCount} PR)` : '';
+            return `<div class="journey-stage ${cls}"><div style="font-size:10px;color:#7d8590">${s.label || s.key}</div><div style="font-size:11px">${icon} ${st}${waiting}</div></div>`;
+        }).join('')}</div>`;
+    };
+
     const html = filtered.map(f => `
         <div class="list-item" onclick="showFlow('${f.id}')">
             <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
-            <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}</div>
+            <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes matching filter</p>';
     
     document.getElementById('recent-flows').innerHTML = filtered.slice(0, 3).map(f => `
         <div class="list-item" onclick="showFlow('${f.id}')">
             <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
-            <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps</div>
+            <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes</p>';
     
@@ -507,6 +638,16 @@ async function showFlow(flowId) {
             ${flow.anomaly.stackTrace ? `<pre style="padding:8px;background:#161b22;border-radius:4px;font-size:10px;white-space:pre-wrap;max-height:110px;overflow-y:auto;margin:0">${flow.anomaly.stackTrace}</pre>` : ''}
         </div>` : '';
 
+        const journeyStages = flow.journey && Array.isArray(flow.journey.stages) ? flow.journey.stages : [];
+        const journeyHtml = journeyStages.length ? `<div style="margin-bottom:14px"><strong>Flow Journey (Anomaly -> Fix -> Deployment)</strong><div class="journey-row">${journeyStages.map(s => {
+            const st = (s.status || 'PENDING').toUpperCase();
+            const cls = st === 'COMPLETED' ? 'completed' : (st === 'FAILED' ? 'failed' : (st === 'WAITING_DEPENDENCIES' ? 'waiting' : 'pending'));
+            const icon = st === 'COMPLETED' ? '✓' : (st === 'FAILED' ? '✗' : (st === 'WAITING_DEPENDENCIES' ? '⏳' : '○'));
+            const deps = Array.isArray(s.dependencies) ? s.dependencies : [];
+            const depsText = st === 'WAITING_DEPENDENCIES' && deps.length ? `<div style="margin-top:4px;color:#f59e0b;font-size:10px">${deps.map(d => `${d.id||'PR'}:${d.status||'UNKNOWN'}`).join(', ')}</div>` : '';
+            return `<div class="journey-stage ${cls}"><div style="font-size:10px;color:#7d8590">${s.label || s.key}</div><div style="font-size:11px">${icon} ${st}</div>${depsText}</div>`;
+        }).join('')}</div></div>` : '';
+
         const typeBadge = (flow.type||'').toLowerCase().replaceAll('_','-');
         const date = new Date(flow.createdAt||0).toLocaleString();
         document.getElementById('flow-details').innerHTML = `
@@ -522,7 +663,7 @@ async function showFlow(flowId) {
                 </div>
                 <div style="background:#0f1419;border-radius:6px;padding:10px">
                     <div style="font-size:10px;color:#7d8590;margin-bottom:3px">STATUS</div>
-                    <div style="color:#3fb950">${flow.status}</div>
+                    <div style="color:${flow.status==='WAITING_DEPENDENCIES'?'#f59e0b':'#3fb950'}">${flow.status}</div>
                 </div>
                 <div style="background:#0f1419;border-radius:6px;padding:10px;grid-column:1/-1">
                     <div style="font-size:10px;color:#7d8590;margin-bottom:3px">DETECTED</div>
@@ -530,6 +671,7 @@ async function showFlow(flowId) {
                 </div>
             </div>
             ${anomalyHtml}
+            ${journeyHtml}
             <div><strong>Execution Steps (${(flow.steps||[]).length})</strong>${steps}</div>
         `;
         document.getElementById('flowModal').classList.add('active');
