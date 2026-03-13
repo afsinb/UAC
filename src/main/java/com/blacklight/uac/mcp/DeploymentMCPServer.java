@@ -1,18 +1,32 @@
 package com.blacklight.uac.mcp;
 
+import com.blacklight.uac.evolver.PRDeploymentGate;
+
 import java.util.*;
 
 /**
- * DeploymentMCPServer - MCP server for deployment decisions
- * Provides AI-powered deployment strategy recommendations
+ * DeploymentMCPServer - MCP server for deployment decisions.
+ *
+ * Provides AI-powered deployment strategy recommendations.
+ *
+ * Key enforcement rule (developV2):
+ *   Every deployment path checks the PRDeploymentGate first.
+ *   If the associated PR has not been APPROVED + MERGED into master,
+ *   the deployment is rejected with a clear error message.
  */
 public class DeploymentMCPServer implements MCPServer {
-    
+
+    private static final String RED   = "\u001B[31m";
+    private static final String GREEN = "\u001B[32m";
+    private static final String RESET = "\u001B[0m";
+
+    private final PRDeploymentGate gate = PRDeploymentGate.getInstance();
+
     @Override
     public String getName() {
         return "Deployment";
     }
-    
+
     @Override
     public List<String> getCapabilities() {
         return Arrays.asList(
@@ -20,20 +34,64 @@ public class DeploymentMCPServer implements MCPServer {
             "assess_risk",
             "calculate_rollback_time",
             "validate_deployment",
-            "schedule_deployment"
+            "schedule_deployment",
+            "check_pr_gate"           // new: explicit gate-check capability
         );
     }
-    
+
     @Override
     public MCPResponse handleRequest(MCPRequest request) {
         return switch (request.getMethod()) {
-            case "recommend_strategy" -> recommendStrategy(request);
-            case "assess_risk" -> assessRisk(request);
+            case "recommend_strategy"   -> recommendStrategy(request);
+            case "assess_risk"          -> assessRisk(request);
             case "calculate_rollback_time" -> calculateRollbackTime(request);
-            case "validate_deployment" -> validateDeployment(request);
-            case "schedule_deployment" -> scheduleDeployment(request);
+            case "validate_deployment"  -> validateDeployment(request);
+            case "schedule_deployment"  -> scheduleDeployment(request);
+            case "check_pr_gate"        -> checkPrGate(request);
             default -> MCPResponse.error(request.getId(), "Unknown method: " + request.getMethod());
         };
+    }
+
+    // ── PR Gate check ─────────────────────────────────────────────────────
+
+    /**
+     * check_pr_gate – explicitly verify whether a PR has been approved and
+     * merged, making deployment eligible.
+     *
+     * Required params: prNumber (int)
+     */
+    private MCPResponse checkPrGate(MCPRequest request) {
+        Integer prNumber = request.getIntParam("prNumber");
+        if (prNumber == null) {
+            return MCPResponse.error(request.getId(), "Missing required param: prNumber");
+        }
+
+        boolean allowed = gate.isDeploymentAllowed(prNumber);
+        Optional<PRDeploymentGate.PRRecord> optRecord = gate.findByPrNumber(prNumber);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("prNumber",           prNumber);
+        result.put("deploymentAllowed",  allowed);
+
+        optRecord.ifPresentOrElse(
+            record -> {
+                result.put("prState",   record.getState().name());
+                result.put("branch",    record.getBranch());
+                result.put("targetBranch", record.getTargetBranch());
+            },
+            () -> result.put("prState", "NOT_REGISTERED")
+        );
+
+        if (allowed) {
+            System.out.println(GREEN + "[DeploymentMCPServer] 🟢 PR gate OPEN for PR #" + prNumber + RESET);
+            return MCPResponse.success(request.getId(), result);
+        } else {
+            String msg = "Deployment BLOCKED: PR #" + prNumber + " state="
+                    + result.get("prState") + ". Must be MERGED into master first.";
+            System.out.println(RED + "[DeploymentMCPServer] 🚫 " + msg + RESET);
+            result.put("blockReason", msg);
+            return MCPResponse.error(request.getId(), msg);
+        }
     }
     
     @Override
@@ -164,12 +222,34 @@ public class DeploymentMCPServer implements MCPServer {
     private MCPResponse validateDeployment(MCPRequest request) {
         String environment = request.getStringParam("environment");
         Map<String, Object> deploymentConfig = (Map<String, Object>) request.getParam("config");
-        
+
         List<String> validations = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         boolean isValid = true;
-        
-        // Validate deployment configuration
+
+        // ── PR Gate enforcement ───────────────────────────────────────────
+        Integer prNumber = request.getIntParam("prNumber");
+        if (prNumber != null) {
+            boolean gateOpen = gate.isDeploymentAllowed(prNumber);
+            if (!gateOpen) {
+                Optional<PRDeploymentGate.PRRecord> optRecord = gate.findByPrNumber(prNumber);
+                String state = optRecord.map(r -> r.getState().name()).orElse("NOT_REGISTERED");
+                isValid = false;
+                validations.add("PR #" + prNumber + " has not been approved and merged "
+                        + "(current state: " + state + "). Deployment is blocked.");
+                System.out.println(RED + "[DeploymentMCPServer] 🚫 PR gate check FAILED "
+                        + "for PR #" + prNumber + " (state=" + state + ")" + RESET);
+            } else {
+                System.out.println(GREEN + "[DeploymentMCPServer] ✅ PR gate check PASSED "
+                        + "for PR #" + prNumber + RESET);
+            }
+        } else {
+            // No prNumber supplied – warn but don't block (legacy call path)
+            warnings.add("No prNumber provided; skipping PR gate check. "
+                    + "Supply prNumber to enforce the deploy gate.");
+        }
+
+        // ── Standard configuration checks ────────────────────────────────
         if (deploymentConfig == null) {
             isValid = false;
             validations.add("Missing deployment configuration");
@@ -185,24 +265,38 @@ public class DeploymentMCPServer implements MCPServer {
                 validations.add("Production deployments require a rollback plan");
             }
         }
-        
+
         Map<String, Object> result = new HashMap<>();
-        result.put("isValid", isValid);
-        result.put("validations", validations);
-        result.put("warnings", warnings);
-        result.put("environment", environment);
-        
-        return isValid ? 
+        result.put("isValid",      isValid);
+        result.put("validations",  validations);
+        result.put("warnings",     warnings);
+        result.put("environment",  environment);
+        result.put("prGateChecked", prNumber != null);
+
+        return isValid ?
             MCPResponse.success(request.getId(), result) :
             MCPResponse.error(request.getId(), "Deployment validation failed");
     }
     
     private MCPResponse scheduleDeployment(MCPRequest request) {
-        String environment = request.getStringParam("environment");
+        String environment  = request.getStringParam("environment");
         String preferredTime = request.getStringParam("preferredTime");
-        
+
+        // ── PR Gate: production scheduling is blocked until PR is merged ──
+        Integer prNumber = request.getIntParam("prNumber");
+        if ("production".equals(environment) && prNumber != null) {
+            if (!gate.isDeploymentAllowed(prNumber)) {
+                Optional<PRDeploymentGate.PRRecord> optRecord = gate.findByPrNumber(prNumber);
+                String state = optRecord.map(r -> r.getState().name()).orElse("NOT_REGISTERED");
+                String msg = "Cannot schedule production deployment: PR #" + prNumber
+                        + " state=" + state + " (must be MERGED first).";
+                System.out.println(RED + "[DeploymentMCPServer] 🚫 " + msg + RESET);
+                return MCPResponse.error(request.getId(), msg);
+            }
+        }
+
         Map<String, Object> schedule = new HashMap<>();
-        
+
         // Recommend optimal deployment windows
         if ("production".equals(environment)) {
             schedule.put("recommendedWindow", "Tuesday-Thursday, 10:00-14:00 UTC");
@@ -218,10 +312,11 @@ public class DeploymentMCPServer implements MCPServer {
             schedule.put("requiresApproval", false);
             schedule.put("notifyTeams", Arrays.asList("engineering"));
         }
-        
-        schedule.put("environment", environment);
+
+        schedule.put("environment",   environment);
         schedule.put("preferredTime", preferredTime);
-        
+        schedule.put("prGatePassed",  prNumber == null || gate.isDeploymentAllowed(prNumber));
+
         return MCPResponse.success(request.getId(), schedule);
     }
     
