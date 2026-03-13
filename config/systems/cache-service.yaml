@@ -26,8 +26,11 @@ git:
   token_env: GITHUB_TOKEN
 
 deployment:
-  type: local
-  restart_command: "pkill -f 'java CacheService' && sleep 1 && cd /tmp/sample-apps/cache-service && java CacheService > logs/cache-service.log 2>&1 &"
+  type: docker
+  container_name: uac-cache-service
+  service_name: cache-service
+  compose_file: /Users/afsinbuyuksarac/development/UAC/docker/docker-compose.yml
+  restart_command: "docker restart uac-cache-service"
 
 thresholds:
   memory_percent: 75
@@ -44,4 +47,3 @@ tags:
   - cache
   - in-memory
   - cache-eviction
-

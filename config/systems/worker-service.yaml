@@ -26,8 +26,11 @@ git:
   token_env: GITHUB_TOKEN
 
 deployment:
-  type: local
-  restart_command: "pkill -f 'java WorkerService' && sleep 1 && cd /tmp/sample-apps/worker-service && java WorkerService > logs/worker-service.log 2>&1 &"
+  type: docker
+  container_name: uac-worker-service
+  service_name: worker-service
+  compose_file: /Users/afsinbuyuksarac/development/UAC/docker/docker-compose.yml
+  restart_command: "docker restart uac-worker-service"
 
 thresholds:
   memory_percent: 80
@@ -44,4 +47,3 @@ tags:
   - worker
   - background-job
   - memory-leak
-

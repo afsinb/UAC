@@ -26,8 +26,11 @@ git:
   token_env: GITHUB_TOKEN
 
 deployment:
-  type: local
-  restart_command: "pkill -f 'java PaymentService' && sleep 1 && cd /tmp/sample-apps/payment-api && java PaymentService > logs/payment-api.log 2>&1 &"
+  type: docker
+  container_name: uac-payment-api
+  service_name: payment-api
+  compose_file: /Users/afsinbuyuksarac/development/UAC/docker/docker-compose.yml
+  restart_command: "docker restart uac-payment-api"
 
 thresholds:
   error_rate: 0.05
@@ -43,4 +46,3 @@ tags:
   - sample
   - payment
   - financial
-

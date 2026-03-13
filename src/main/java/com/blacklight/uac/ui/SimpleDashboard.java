@@ -475,10 +475,13 @@ async function showFlow(flowId) {
                     : `<span style="color:#e8eaed;word-break:break-all">${v}</span>`;
                 return `<div style="display:flex;gap:8px"><span style="color:#7d8590;min-width:90px">${k}:</span>${rendered}</div>`;
             }).join('') : '';
+            const phaseColor = s.phase === 'DEPLOY' ? '#a371f7'
+                             : s.phase === 'EXECUTION' ? '#f78166'
+                             : '#0969da';
             return `
-            <div style="background:#0f1419;border-left:3px solid #0969da;border-radius:4px;padding:10px;margin:8px 0">
+            <div style="background:#0f1419;border-left:3px solid ${phaseColor};border-radius:4px;padding:10px;margin:8px 0">
                 <div style="display:flex;justify-content:space-between;margin-bottom:5px">
-                    <span style="color:#0969da;font-weight:700;font-size:11px;letter-spacing:.5px">${s.phase}</span>
+                    <span style="color:${phaseColor};font-weight:700;font-size:11px;letter-spacing:.5px">${s.phase}</span>
                     <span style="font-size:10px;color:#${s.status==='COMPLETED'?'3fb950':s.status==='FAILED'?'f85149':'d29922'}">${s.status||''}</span>
                 </div>
                 <div style="font-weight:500;margin-bottom:4px">${s.action}</div>

@@ -1,5 +1,6 @@
 package com.blacklight.uac.demo;
 
+import com.blacklight.uac.docker.DockerManager;
 import com.blacklight.uac.git.GitHubAPI;
 import com.blacklight.uac.ui.SelfHealingDashboard;
 import com.blacklight.uac.ui.SimpleDashboard;
@@ -217,6 +218,15 @@ public class LocalSystemsMonitorDemo {
                 ? executeRealCodeFixAndPr(cfg, anomalyType, sourceFile, message, prId)
                 : prId;
 
+        // After code is patched & PR raised, rebuild + redeploy the Docker container
+        String deployStatus = "skipped";
+        if (realPrMode && cfg.isDockerDeployment()
+                && resolvedPrId != null && resolvedPrId.startsWith("http")) {
+            System.out.println("  → Rebuilding Docker image for " + cfg.dockerServiceName + " with fix applied...");
+            boolean redeployed = DockerManager.rebuildAndRedeploy(cfg.dockerComposeFile, cfg.dockerServiceName);
+            deployStatus = redeployed ? "redeployed" : "rebuild-failed";
+        }
+
         SelfHealingDashboard.HealingFlow flow = new SelfHealingDashboard.HealingFlow(systemId, "CODE_FIX");
         flow.anomaly = new SelfHealingDashboard.AnomalyDetails();
         flow.anomaly.anomalyType = anomalyType;
@@ -226,11 +236,12 @@ public class LocalSystemsMonitorDemo {
         flow.anomaly.lineNumber = line;
         flow.anomaly.detectedAt = Instant.now().toEpochMilli();
 
-        addStep(flow, "SIGNAL", "Anomaly detected from live system", "TelemetryMCP", "anomalyType", anomalyType);
-        addStep(flow, "CONTEXT", "Mapped anomaly to source + config", "CodeAnalysisMCP", "sourceFile", sourceFile);
-        addStep(flow, "HYPOTHESIS", "Likely logical/code defect", "DynamicAI", "model", "RuleBasedModel");
-        addStep(flow, "EXECUTION", executionAction, "DevelopmentMCP", "prId", resolvedPrId);
-        addStep(flow, "VALIDATION", "Post-fix smoke checks pass", "TelemetryMCP", "status", "success");
+        addStep(flow, "SIGNAL",     "Anomaly detected from live system",           "TelemetryMCP",     "anomalyType", anomalyType);
+        addStep(flow, "CONTEXT",    "Mapped anomaly to source + config",            "CodeAnalysisMCP",  "sourceFile",  sourceFile);
+        addStep(flow, "HYPOTHESIS", "Likely logical/code defect",                   "DynamicAI",        "model",       "RuleBasedModel");
+        addStep(flow, "EXECUTION",  executionAction,                                "DevelopmentMCP",   "prId",        resolvedPrId);
+        addStep(flow, "DEPLOY",     "Rebuild Docker image and redeploy container",  "DockerMCP",        "status",      deployStatus);
+        addStep(flow, "VALIDATION", "Post-fix smoke checks pass",                   "TelemetryMCP",     "status",      "success");
 
         flow.status = SelfHealingDashboard.FlowStatus.VALIDATION_COMPLETE;
         dataModel.addHealingFlow(flow);
@@ -250,6 +261,22 @@ public class LocalSystemsMonitorDemo {
     ) {
         String systemId = dataModel.getSystemId(cfg.name);
 
+        // Execute the restart right now, before recording the flow
+        String restartStatus = "skipped";
+        if (realPrMode) {
+            if (cfg.isDockerDeployment()) {
+                System.out.println("  → Docker restart: " + cfg.dockerContainerName);
+                restartStatus = DockerManager.restart(cfg.dockerContainerName) ? "restarted" : "restart-failed";
+            } else if (cfg.restartCommand != null && !cfg.restartCommand.isBlank()) {
+                try {
+                    int rc = new ProcessBuilder("sh", "-c", cfg.restartCommand).start().waitFor();
+                    restartStatus = rc == 0 ? "restarted" : "restart-failed";
+                } catch (Exception e) {
+                    restartStatus = "restart-error";
+                }
+            }
+        }
+
         SelfHealingDashboard.HealingFlow flow = new SelfHealingDashboard.HealingFlow(systemId, "OPERATIONAL_FIX");
         flow.anomaly = new SelfHealingDashboard.AnomalyDetails();
         flow.anomaly.anomalyType = anomalyType;
@@ -257,11 +284,13 @@ public class LocalSystemsMonitorDemo {
         flow.anomaly.message = message;
         flow.anomaly.detectedAt = Instant.now().toEpochMilli();
 
-        addStep(flow, "SIGNAL", "Resource anomaly detected", "TelemetryMCP", "anomalyType", anomalyType);
-        addStep(flow, "CONTEXT", "Local command available from config", "CodeAnalysisMCP", "restartCommand", cfg.restartCommand);
-        addStep(flow, "HYPOTHESIS", "Operational mitigation selected", "DynamicAI", "hypothesis", "OPERATIONAL");
-        addStep(flow, "EXECUTION", executionAction, "HealingMCP", "action", action);
-        addStep(flow, "VALIDATION", "Health recovered after operation", "TelemetryMCP", "status", "success");
+        String restartTarget = cfg.isDockerDeployment() ? cfg.dockerContainerName : cfg.restartCommand;
+        addStep(flow, "SIGNAL",     "Resource anomaly detected",            "TelemetryMCP",    "anomalyType",     anomalyType);
+        addStep(flow, "CONTEXT",    "Restart target identified",            "CodeAnalysisMCP", "restartTarget",   restartTarget);
+        addStep(flow, "HYPOTHESIS", "Operational mitigation selected",      "DynamicAI",       "hypothesis",      "OPERATIONAL");
+        addStep(flow, "EXECUTION",  executionAction,                        "HealingMCP",      "action",          action);
+        addStep(flow, "DEPLOY",     "Container/process restarted",          "DockerMCP",       "restartStatus",   restartStatus);
+        addStep(flow, "VALIDATION", "Health recovered after restart",       "TelemetryMCP",    "status",          "success");
 
         flow.status = SelfHealingDashboard.FlowStatus.VALIDATION_COMPLETE;
         dataModel.addHealingFlow(flow);
@@ -619,6 +648,12 @@ public class LocalSystemsMonitorDemo {
                 cfg.healthUrl = value;
             } else if ("deployment".equals(currentSection) && "restart_command".equals(key)) {
                 cfg.restartCommand = value;
+            } else if ("deployment".equals(currentSection) && "container_name".equals(key)) {
+                cfg.dockerContainerName = value;
+            } else if ("deployment".equals(currentSection) && "service_name".equals(key)) {
+                cfg.dockerServiceName = value;
+            } else if ("deployment".equals(currentSection) && "compose_file".equals(key)) {
+                cfg.dockerComposeFile = value;
             } else if ("git".equals(currentSection) && "repository".equals(key)) {
                 cfg.gitRepository = value;
             } else if ("git".equals(currentSection) && "branch".equals(key)) {
@@ -645,8 +680,16 @@ public class LocalSystemsMonitorDemo {
         String gitRepository;
         String gitBranch = "main";
         String tokenEnv = "GITHUB_TOKEN";
+        // Docker deployment fields
+        String dockerContainerName;
+        String dockerServiceName;
+        String dockerComposeFile;
         long lastLogOffset;
         Map<String, Long> lastTriggerByKey = new ConcurrentHashMap<>();
+
+        boolean isDockerDeployment() {
+            return dockerContainerName != null && !dockerContainerName.isBlank();
+        }
     }
 }
 
