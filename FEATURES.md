@@ -334,5 +334,134 @@ Dashboard View
 
 ---
 
+## Adding New Systems to Monitor (v2.0+)
+
+### System Integration Requirements
+
+To add any running application to the self-healing system, provide:
+
+1. **Metrics Endpoint**
+   - Prometheus format: `http://app:9090/metrics`
+   - OR structured JSON logs with timestamps, levels, exceptions
+   - Contains: CPU%, memory, error rates, response times
+
+2. **Source Code Access**
+   - Git repository (GitHub, GitLab)
+   - Personal access token for cloning/PRs
+   - Recent commit history
+
+3. **Deployment Capability**
+   - Kubernetes, Docker, or VM SSH access
+   - Ability to scale, restart, rollback
+
+4. **Structured Logging**
+   - JSON format with: timestamp, level, message, exception
+   - Exception stack traces for code analysis
+
+### Configuration Template
+
+```yaml
+system:
+  name: my-service
+  environment: production
+
+monitoring:
+  enabled: true
+  health_check_interval: 60s
+
+metrics:
+  source: prometheus
+  endpoint: http://localhost:9090/metrics
+
+logs:
+  location: /var/log/my-service.log
+  format: json
+
+git:
+  repository: https://github.com/myorg/my-service.git
+  branch: main
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: kubernetes  # kubernetes, docker, vm
+  namespace: production
+  service: my-service
+  replicas:
+    min: 2
+    max: 10
+    target_cpu_percent: 70
+
+thresholds:
+  cpu_percent: 80
+  memory_percent: 85
+  error_rate: 0.05
+  response_time_ms: 5000
+
+recovery:
+  enabled: true
+  operational_fixes: true   # scale, restart
+  code_fixes: true          # auto-patch
+  rollback_on_failure: true
+```
+
+### How System Recognition Works
+
+```
+Every 60 seconds:
+  1. Collect metrics (CPU, memory, errors)
+  2. Scan logs for exceptions
+  3. Calculate health score (0.0-1.0)
+  
+If anomaly detected:
+  1. Fetch recent git commits
+  2. Identify which change caused issue
+  3. Classify: Code bug OR infrastructure
+  4. Execute fix (automatic or manual review)
+  5. Validate recovery
+  6. Report in dashboard
+```
+
+### Real Example: Payment Service
+
+```yaml
+system:
+  name: payment-service
+
+thresholds:
+  error_rate: 0.02         # Strict: max 2% errors
+  response_time_ms: 3000   # Must be fast
+  
+deployment:
+  replicas:
+    min: 3                 # Always 3+ instances
+    max: 20                # Auto-scale as needed
+    target_cpu_percent: 70 # Keep headroom
+    
+recovery:
+  code_fixes: true         # Auto-patch bugs
+  operational_fixes: true  # Auto-scale/restart
+```
+
+### Quick Integration (5 minutes)
+
+1. Create config file: `config/systems/my-app.yaml`
+2. Add Prometheus metrics endpoint or structured logs
+3. Grant git access via token: `export GITHUB_TOKEN="..."`
+4. Deploy: `./run_demo.sh`
+5. View: http://localhost:8888
+
+### Supported Anomalies & Auto-Fixes
+
+| Anomaly | Detection | Auto-Fix |
+|---------|-----------|----------|
+| High CPU | Metrics > 80% | Scale up replicas |
+| High Memory | Metrics > 85% | Restart service |
+| High Error Rate | Logs > threshold | Analyze code + PR |
+| Exception | Stack trace in logs | Identify source + patch |
+| Slow Response | p99 latency > SLA | Scale or optimize |
+| Service Crash | Unresponsive | Auto-restart |
+
+---
+
 See README.md for quick start and DEVELOPER_GUIDE.md for setup instructions.
 

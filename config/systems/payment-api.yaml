@@ -1,0 +1,48 @@
+system:
+  name: payment-api
+  id: payment-api-local
+  environment: development
+  description: Payment processing service with intentional bugs
+
+monitoring:
+  enabled: true
+  health_check_interval: 30s
+  log_scan_interval: 10s
+
+logs:
+  location: /tmp/sample-apps/payment-api/logs/payment-api.log
+  format: plain
+  patterns:
+    error: "ERROR|Exception|NullPointerException|ArithmeticException"
+    warning: "WARN"
+
+health_endpoint:
+  url: http://localhost:8081/api/payments/health
+  interval: 30s
+
+git:
+  repository: git@github.com:afsinb/payment-api.git
+  branch: main
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: docker
+  container_name: uac-payment-api
+  service_name: payment-api
+  compose_file: /Users/afsinbuyuksarac/development/UAC/docker/docker-compose.yml
+  restart_command: "docker restart uac-payment-api"
+
+thresholds:
+  error_rate: 0.05
+  response_time_ms: 2000
+
+recovery:
+  enabled: true
+  operational_fixes: true
+  code_fixes: true
+  max_retries: 3
+
+tags:
+  - sample
+  - payment
+  - financial

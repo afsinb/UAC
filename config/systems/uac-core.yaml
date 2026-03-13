@@ -1,0 +1,42 @@
+system:
+  name: uac-core
+  id: uac-core-local
+  environment: development
+  description: UAC self-observability and self-healing monitor target
+
+monitoring:
+  enabled: true
+  health_check_interval: 30s
+  log_scan_interval: 10s
+
+logs:
+  location: /tmp/uac-local-monitor.log
+  format: plain
+  patterns:
+    error: "ERROR|Exception"
+    warning: "WARN|Checking alarm"
+
+health_endpoint:
+  url: http://localhost:8888/api/systems
+  interval: 30s
+
+git:
+  repository: git@github.com:afsinb/UAC.git
+  branch: develop
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: local
+  restart_command: "cd /Users/afsinbuyuksarac/development/UAC && ./run_demo.sh --restart --local-systems --real-pr"
+
+recovery:
+  enabled: true
+  operational_fixes: false
+  code_fixes: true
+  max_retries: 1
+
+tags:
+  - sample
+  - uac
+  - self-healing
+

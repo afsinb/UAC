@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UAC Monitoring Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0f172a; color: #e2e8f0; min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+            padding: 20px 30px; border-bottom: 1px solid #334155;
+        }
+        .header h1 { font-size: 24px; color: #38bdf8; }
+        .header p { color: #94a3b8; margin-top: 5px; }
+        .container { padding: 20px; max-width: 1400px; margin: 0 auto; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card {
+            background: #1e293b; border-radius: 12px; padding: 20px;
+            border: 1px solid #334155;
+        }
+        .card h2 { font-size: 16px; color: #94a3b8; margin-bottom: 15px; }
+        .metric { font-size: 36px; font-weight: bold; }
+        .metric.healthy { color: #22c55e; }
+        .metric.warning { color: #eab308; }
+        .metric.critical { color: #ef4444; }
+        .status-badge {
+            display: inline-block; padding: 4px 12px; border-radius: 20px;
+            font-size: 12px; font-weight: 600;
+        }
+        .status-healthy { background: #22c55e20; color: #22c55e; }
+        .status-warning { background: #eab30820; color: #eab308; }
+        .status-critical { background: #ef444420; color: #ef4444; }
+        .progress-bar {
+            height: 8px; background: #334155; border-radius: 4px; overflow: hidden;
+        }
+        .progress-fill { height: 100%; transition: width 0.3s; }
+        .progress-green { background: #22c55e; }
+        .progress-yellow { background: #eab308; }
+        .progress-red { background: #ef4444; }
+        .event-log {
+            max-height: 300px; overflow-y: auto; font-family: monospace; font-size: 12px;
+        }
+        .event { padding: 8px; border-bottom: 1px solid #334155; }
+        .event-time { color: #64748b; }
+        .event-info { color: #38bdf8; }
+        .event-warning { color: #eab308; }
+        .event-error { color: #ef4444; }
+        .event-success { color: #22c55e; }
+        .mcp-server {
+            display: flex; align-items: center; gap: 10px; padding: 10px;
+            background: #0f172a; border-radius: 8px; margin-bottom: 10px;
+        }
+        .mcp-status { width: 10px; height: 10px; border-radius: 50%; }
+        .mcp-online { background: #22c55e; }
+        .mcp-offline { background: #ef4444; }
+        .refresh-btn {
+            background: #3b82f6; color: white; border: none; padding: 10px 20px;
+            border-radius: 8px; cursor: pointer; font-weight: 600;
+        }
+        .refresh-btn:hover { background: #2563eb; }
+        .phase-indicator {
+            display: flex; gap: 10px; margin-top: 15px;
+        }
+        .phase {
+            flex: 1; text-align: center; padding: 10px;
+            background: #0f172a; border-radius: 8px; font-size: 12px;
+        }
+        .phase.active { border: 2px solid #38bdf8; }
+        .phase.completed { border: 2px solid #22c55e; }
+        .phase-name { font-weight: bold; margin-bottom: 5px; }
+        .phase-status { color: #94a3b8; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🛡️ Universal Autonomous Core - Monitoring Dashboard</h1>
+        <p>Real-time self-healing system monitoring | Hunter Alpha AI Model</p>
+    </div>
+
+    <div class="container">
+        <!-- 5-Phase Loop Indicator -->
+        <div class="card" style="margin-bottom: 20px;">
+            <h2>5-Phase Autonomous Loop</h2>
+            <div class="phase-indicator">
+                <div class="phase completed" id="phase-signal">
+                    <div class="phase-name">1. SIGNAL</div>
+                    <div class="phase-status">✓ Detect</div>
+                </div>
+                <div class="phase completed" id="phase-context">
+                    <div class="phase-name">2. CONTEXT</div>
+                    <div class="phase-status">✓ Analyze</div>
+                </div>
+                <div class="phase active" id="phase-hypothesis">
+                    <div class="phase-name">3. HYPOTHESIS</div>
+                    <div class="phase-status">⚡ Classify</div>
+                </div>
+                <div class="phase" id="phase-execution">
+                    <div class="phase-name">4. EXECUTION</div>
+                    <div class="phase-status">○ Execute</div>
+                </div>
+                <div class="phase" id="phase-validation">
+                    <div class="phase-name">5. VALIDATION</div>
+                    <div class="phase-status">○ Verify</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="grid">
+            <!-- Health Score Card -->
+            <div class="card">
+                <h2>System Health Score</h2>
+                <div class="metric healthy" id="healthScore">0.85</div>
+                <div id="healthStatus"><span class="status-badge status-healthy">HEALTHY</span></div>
+                <div class="progress-bar" style="margin-top: 15px;">
+                    <div class="progress-fill progress-green" id="healthBar" style="width: 85%;"></div>
+                </div>
+            </div>
+
+            <!-- CPU Usage Card -->
+            <div class="card">
+                <h2>CPU Usage</h2>
+                <div class="metric" id="cpuUsage">45%</div>
+                <div class="progress-bar" style="margin-top: 15px;">
+                    <div class="progress-fill progress-green" id="cpuBar" style="width: 45%;"></div>
+                </div>
+            </div>
+
+            <!-- Memory Usage Card -->
+            <div class="card">
+                <h2>Memory Usage</h2>
+                <div class="metric" id="memoryUsage">62%</div>
+                <div class="progress-bar" style="margin-top: 15px;">
+                    <div class="progress-fill progress-yellow" id="memoryBar" style="width: 62%;"></div>
+                </div>
+            </div>
+
+            <!-- MCP Servers Card -->
+            <div class="card">
+                <h2>MCP Servers (All Components)</h2>
+                <div id="mcpServers">
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>TelemetryMCP (Observer)</span>
+                    </div>
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>HealingMCP (Resolver)</span>
+                    </div>
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>DevelopmentMCP (Evolver)</span>
+                    </div>
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>DynamicAI (AI Engine)</span>
+                    </div>
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>CodeAnalysisMCP</span>
+                    </div>
+                    <div class="mcp-server">
+                        <div class="mcp-status mcp-online"></div>
+                        <span>DeploymentMCP</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- AI Model Card -->
+            <div class="card">
+                <h2>AI Model Status</h2>
+                <div style="margin-bottom: 10px;">
+                    <span style="color: #94a3b8;">Active Model:</span>
+                    <span style="color: #38bdf8; font-weight: bold;">Hunter Alpha</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <span style="color: #94a3b8;">Provider:</span>
+                    <span>OpenRouter.ai</span>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <span style="color: #94a3b8;">Priority:</span>
+                    <span style="color: #22c55e;">10 (Highest)</span>
+                </div>
+                <div>
+                    <span style="color: #94a3b8;">Learning:</span>
+                    <span style="color: #eab308;">Active (Q-learning)</span>
+                </div>
+            </div>
+
+            <!-- Event Log Card -->
+            <div class="card" style="grid-column: span 2;">
+                <h2>Event Log</h2>
+                <div class="event-log" id="eventLog">
+                    <div class="event">
+                        <span class="event-time">[System]</span>
+                        <span class="event-info">Dashboard initialized</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[System]</span>
+                        <span class="event-success">✓ TelemetryMCP online</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[System]</span>
+                        <span class="event-success">✓ HealingMCP online</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[System]</span>
+                        <span class="event-success">✓ DevelopmentMCP online</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[System]</span>
+                        <span class="event-success">✓ DynamicAI online (Hunter Alpha)</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[AI]</span>
+                        <span class="event-info">Reinforcement learner initialized</span>
+                    </div>
+                    <div class="event">
+                        <span class="event-time">[Monitor]</span>
+                        <span class="event-info">Health score: 0.85 (HEALTHY)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Recent Actions Card -->
+            <div class="card">
+                <h2>Recent Healing Actions</h2>
+                <div id="recentActions">
+                    <div class="event">
+                        <span class="event-time">No actions yet</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-top: 20px; text-align: center;">
+            <button class="refresh-btn" onclick="simulateActivity()">🔄 Simulate Activity</button>
+            <span style="margin-left: 20px; color: #64748b;">Last updated: <span id="lastUpdate">-</span></span>
+        </div>
+    </div>
+
+    <script>
+        function updateTimestamp() {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+
+        function addEvent(level, message) {
+            const log = document.getElementById('eventLog');
+            const time = new Date().toLocaleTimeString();
+            const levelClass = level === 'error' ? 'event-error' :
+                              level === 'warning' ? 'event-warning' :
+                              level === 'success' ? 'event-success' : 'event-info';
+            const prefix = level === 'error' ? '✗' : level === 'warning' ? '⚠' : level === 'success' ? '✓' : '→';
+
+            log.innerHTML = `
+                <div class="event">
+                    <span class="event-time">[${time}]</span>
+                    <span class="${levelClass}">${prefix} ${message}</span>
+                </div>
+            ` + log.innerHTML;
+        }
+
+        function updateHealth(score) {
+            document.getElementById('healthScore').textContent = score.toFixed(2);
+
+            const bar = document.getElementById('healthBar');
+            bar.style.width = (score * 100) + '%';
+            bar.className = 'progress-fill ' +
+                (score > 0.7 ? 'progress-green' : (score > 0.4 ? 'progress-yellow' : 'progress-red'));
+
+            const status = document.getElementById('healthStatus');
+            const badgeClass = score > 0.7 ? 'status-healthy' : (score > 0.4 ? 'status-warning' : 'status-critical');
+            const statusText = score > 0.7 ? 'HEALTHY' : (score > 0.4 ? 'DEGRADED' : 'CRITICAL');
+            status.innerHTML = '<span class="status-badge ' + badgeClass + '">' + statusText + '</span>';
+        }
+
+        function updateMetrics(cpu, memory) {
+            document.getElementById('cpuUsage').textContent = cpu + '%';
+            document.getElementById('memoryUsage').textContent = memory + '%';
+
+            document.getElementById('cpuBar').style.width = cpu + '%';
+            document.getElementById('memoryBar').style.width = memory + '%';
+
+            document.getElementById('cpuBar').className = 'progress-fill ' +
+                (cpu < 70 ? 'progress-green' : (cpu < 90 ? 'progress-yellow' : 'progress-red'));
+            document.getElementById('memoryBar').className = 'progress-fill ' +
+                (memory < 70 ? 'progress-green' : (memory < 90 ? 'progress-yellow' : 'progress-red'));
+        }
+
+        function simulateActivity() {
+            updateTimestamp();
+
+            // Simulate random metrics
+            const cpu = Math.floor(Math.random() * 60) + 20;
+            const memory = Math.floor(Math.random() * 40) + 40;
+            const health = 0.5 + (Math.random() * 0.5);
+
+            updateMetrics(cpu, memory);
+            updateHealth(health);
+
+            addEvent('info', `Metrics updated: CPU=${cpu}%, Memory=${memory}%`);
+
+            if (health < 0.6) {
+                addEvent('warning', `Health score low: ${health.toFixed(2)}`);
+                setTimeout(() => addEvent('info', 'AI analyzing anomaly...'), 500);
+                setTimeout(() => addEvent('info', 'Hunter Alpha generating fix...'), 1000);
+                setTimeout(() => addEvent('success', 'Fix applied successfully'), 1500);
+                setTimeout(() => updateHealth(0.85), 2000);
+            }
+        }
+
+        // Initial update
+        updateTimestamp();
+
+        // Auto-refresh every 5 seconds
+        setInterval(() => {
+            updateTimestamp();
+            const cpu = Math.floor(Math.random() * 30) + 30;
+            const memory = Math.floor(Math.random() * 20) + 50;
+            updateMetrics(cpu, memory);
+        }, 5000);
+    </script>
+</body>
+</html>
