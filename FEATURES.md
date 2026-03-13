@@ -1,4 +1,6 @@
-# FEATURES.md - Complete Feature List & Demo Data
+# Feature Guide
+
+This guide describes both seeded dashboard capabilities and live local-systems monitoring features.
 
 ## Dashboard Features
 
@@ -334,5 +336,58 @@ Dashboard View
 
 ---
 
-See README.md for quick start and DEVELOPER_GUIDE.md for setup instructions.
+## Live Local-Systems Features
+
+When run with `./run_demo.sh --local-systems`, UAC enables dynamic monitoring for configured systems.
+
+### Config-driven system attachment
+
+- Reads `config/systems/*.yaml` at startup
+- Attaches system cards in dashboard from config entries
+- Monitors each `health_endpoint.url` and `logs.location`
+
+### Runtime anomaly detection from real logs
+
+- `ERROR`/`EXCEPTION` lines create anomaly alarms
+- `WARN` lines create warning alarms
+- Health and log signals generate operational or code-fix flows
+
+### Docker-aware operational recovery
+
+- If deployment config includes container metadata, operational flow executes Docker restart
+- Recovery status appears in flow steps (`DEPLOY` phase)
+
+### Docker-aware code-fix deployment
+
+- In real PR mode, code-fix flow can patch + commit + push + create PR
+- For Docker deployments, system can rebuild/redeploy the configured service after patch
+
+### Real vs simulated PR mode
+
+- Default in local-systems mode: simulated PR IDs for safe demoing
+- Real PR path enabled via `--local-systems --real-pr` (`UAC_REAL_PR=true`)
+
+### UAC self-monitoring scenario
+
+- `uac-core` config allows UAC to monitor its own runtime log stream
+- Excessive dashboard alarm debug lines can trigger `UAC_LOG_SPAM` code-fix flow
+- Fix gates noisy logs behind `Boolean.getBoolean("uac.verbose.dashboard")`
+
+---
+
+## Local systems included in this branch
+
+- `payment-api`
+- `cache-service`
+- `worker-service`
+- `uac-core`
+
+---
+
+## Related docs
+
+- `README.md` - overview and run modes
+- `DEVELOPER_GUIDE.md` - setup and troubleshooting
+- `ARCHITECTURE.md` - component design and execution flow
+- `docs/agent_blueprint.md` - original architecture prompt
 

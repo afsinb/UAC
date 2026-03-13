@@ -1,8 +1,13 @@
-# ARCHITECTURE.md - System Design & Components
+# Architecture Guide
 
 ## System Overview
 
-UAC (Universal Autonomous Core) is a 5-phase self-healing system that automatically detects, diagnoses, and fixes application issues.
+UAC (Universal Autonomous Core) is a 5-phase self-healing system that detects, diagnoses, and mitigates application issues.
+
+The current branch supports two runtime modes:
+
+- `WorkingDemo` for seeded showcase data
+- `LocalSystemsMonitorDemo` for live monitoring of configured local systems
 
 ## 5-Phase Healing Loop
 
@@ -183,6 +188,23 @@ Anomaly: OOMError
 └─ Fix: Restart service + investigate heap dump
 ```
 
+## Local systems extension (live monitoring)
+
+`LocalSystemsMonitorDemo` extends the same 5-phase loop to real local targets:
+
+- Loads system definitions from `config/systems/*.yaml`
+- Polls each `health_endpoint.url`
+- Tails each `logs.location` for anomaly lines (`ERROR`, `EXCEPTION`, `WARN`)
+- Creates operational/code-fix healing flows dynamically in dashboard data model
+
+Execution behavior in this mode:
+
+- Operational flow can restart local process or Docker container
+- Code-fix flow can apply patch + push + PR (real mode) or simulate PR ids
+- Docker deployments can rebuild/redeploy after code fix (`DockerManager`)
+
+Real mode is toggled by environment variable `UAC_REAL_PR=true` (set via `run_demo.sh --local-systems --real-pr`).
+
 ## Data Models
 
 ### Signal
@@ -281,13 +303,27 @@ src/main/java/com/blacklight/uac/
 ├── resolver/
 │   ├── Resolver.java (operational fixes)
 │   └── RecoveryAction.java
+├── docker/
+│   └── DockerManager.java
+├── demo/
+│   ├── WorkingDemo.java
+│   └── LocalSystemsMonitorDemo.java
 ├── evolver/
 │   ├── Evolver.java (code fixes)
 │   └── DevelopmentTask.java
 └── ui/
     ├── SimpleDashboard.java (100% dynamic)
-    ├── SelfHealingDashboard.java (data model)
-    └── WorkingDemo.java (demo data)
+    └── SelfHealingDashboard.java (data model)
+
+config/
+└── systems/
+    ├── payment-api.yaml
+    ├── cache-service.yaml
+    ├── worker-service.yaml
+    └── uac-core.yaml
+
+docker/
+└── docker-compose.yml
 ```
 
 ## Workflow Integration
@@ -307,9 +343,11 @@ mvn clean install                 # Full rebuild
 
 ### Running Demo
 ```bash
-./run_demo.sh                     # Compile + start
-./run_demo.sh --logs              # View logs
-./run_demo.sh --verify            # Check status
+./run_demo.sh                              # Seeded mode (WorkingDemo)
+./run_demo.sh --local-systems              # Live monitor mode
+./run_demo.sh --local-systems --real-pr    # Live mode + real PR path
+./run_demo.sh --logs                       # View selected mode logs
+./run_demo.sh --verify                     # Check status and active class
 ```
 
 ## Technologies
@@ -322,8 +360,10 @@ mvn clean install                 # Full rebuild
 
 ---
 
-**See also:**
-- docs/agent_blueprint.md - Original architecture
-- FEATURES.md - Detailed feature descriptions
-- DEVELOPER_GUIDE.md - Setup and troubleshooting
+## Related docs
+
+- `README.md` - project overview and run modes
+- `DEVELOPER_GUIDE.md` - setup, commands, troubleshooting
+- `FEATURES.md` - dashboard and scenario behavior
+- `docs/agent_blueprint.md` - original architecture prompt
 
