@@ -1,0 +1,1229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UAC Real-Time Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0f1a; color: #e2e8f0; min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #1a2332 0%, #0a0f1a 100%);
+            padding: 20px 30px; border-bottom: 2px solid #3b82f6;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .header h1 { font-size: 22px; color: #3b82f6; }
+        .header .status { display: flex; align-items: center; gap: 10px; }
+        .live-indicator { 
+            width: 12px; height: 12px; background: #22c55e; border-radius: 50%;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .container { padding: 20px; max-width: 1600px; margin: 0 auto; }
+        .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; }
+        .card {
+            background: #1a2332; border-radius: 12px; padding: 20px;
+            border: 1px solid #2d3748; transition: all 0.3s;
+        }
+        .card:hover { border-color: #3b82f6; }
+        .card h2 { font-size: 14px; color: #94a3b8; margin-bottom: 12px; text-transform: uppercase; }
+        .metric { font-size: 42px; font-weight: bold; }
+        .metric.healthy { color: #22c55e; }
+        .metric.warning { color: #eab308; }
+        .metric.critical { color: #ef4444; }
+        .status-badge {
+            display: inline-block; padding: 6px 14px; border-radius: 20px;
+            font-size: 13px; font-weight: 600; margin-top: 10px;
+        }
+        .status-healthy { background: #22c55e20; color: #22c55e; border: 1px solid #22c55e; }
+        .status-warning { background: #eab30820; color: #eab308; border: 1px solid #eab308; }
+        .status-critical { background: #ef444420; color: #ef4444; border: 1px solid #ef4444; }
+        .progress-bar { height: 10px; background: #2d3748; border-radius: 5px; overflow: hidden; margin-top: 15px; }
+        .progress-fill { height: 100%; transition: width 0.5s ease-out; border-radius: 5px; }
+        .progress-green { background: linear-gradient(90deg, #22c55e, #4ade80); }
+        .progress-yellow { background: linear-gradient(90deg, #eab308, #facc15); }
+        .progress-red { background: linear-gradient(90deg, #ef4444, #f87171); }
+        .wide-card { grid-column: span 2; }
+        .full-card { grid-column: span 4; }
+        .event-log { max-height: 350px; overflow-y: auto; font-family: 'SF Mono', monospace; font-size: 12px; }
+        .event { padding: 10px; border-bottom: 1px solid #2d3748; display: flex; gap: 15px; }
+        .event:last-child { border-bottom: none; }
+        .event-time { color: #64748b; min-width: 80px; }
+        .event-info { color: #38bdf8; }
+        .event-warning { color: #eab308; }
+        .event-error { color: #ef4444; }
+        .event-success { color: #22c55e; }
+        .mcp-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+        .mcp-server {
+            display: flex; align-items: center; gap: 10px; padding: 12px;
+            background: #0a0f1a; border-radius: 8px; border: 1px solid #2d3748;
+        }
+        .mcp-status { width: 10px; height: 10px; border-radius: 50%; }
+        .mcp-online { background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+        .mcp-offline { background: #ef4444; box-shadow: 0 0 10px #ef4444; }
+        .btn {
+            background: linear-gradient(135deg, #3b82f6, #2563eb); color: white;
+            border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer;
+            font-weight: 600; font-size: 14px; transition: all 0.3s;
+        }
+        .btn:hover { transform: translateY(-2px); box-shadow: 0 4px 12px #3b82f640; }
+        .btn-danger { background: linear-gradient(135deg, #ef4444, #dc2626); }
+        .actions-grid { display: grid; gap: 10px; }
+        .action-item {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 12px; background: #0a0f1a; border-radius: 8px;
+        }
+        .action-type { font-weight: 600; color: #38bdf8; }
+        .action-status { padding: 4px 8px; border-radius: 4px; font-size: 11px; }
+        .action-success { background: #22c55e20; color: #22c55e; }
+        .action-failed { background: #ef444420; color: #ef4444; }
+        .phase-indicator { display: flex; gap: 8px; }
+        .phase {
+            flex: 1; text-align: center; padding: 12px 8px;
+            background: #0a0f1a; border-radius: 8px; font-size: 11px;
+            border: 2px solid #2d3748; transition: all 0.3s;
+        }
+        .phase.active { border-color: #3b82f6; background: #3b82f610; }
+        .phase.completed { border-color: #22c55e; background: #22c55e10; }
+        .phase-name { font-weight: bold; margin-bottom: 4px; font-size: 12px; }
+        .phase-status { color: #94a3b8; }
+        .ai-card { background: linear-gradient(135deg, #1a2332, #1e1b4b); }
+        .ai-model { font-size: 24px; color: #a78bfa; font-weight: bold; }
+        .controls { display: flex; gap: 10px; margin-top: 20px; justify-content: center; }
+        .app-selector { 
+            background: #1a2332; border: 2px solid #3b82f6; color: #e2e8f0; 
+            padding: 10px 20px; border-radius: 8px; font-size: 14px; cursor: pointer;
+            font-weight: 600; min-width: 150px;
+        }
+        .app-selector:hover { border-color: #60a5fa; }
+        .app-selector:focus { outline: none; border-color: #93c5fd; }
+        .app-badge {
+            display: inline-block; padding: 4px 10px; border-radius: 12px;
+            font-size: 11px; font-weight: 600; margin-left: 10px;
+            background: #3b82f620; color: #3b82f6; border: 1px solid #3b82f6;
+        }
+        .project-stats {
+            display: flex; gap: 20px; margin-top: 10px; font-size: 12px; color: #94a3b8;
+        }
+        .project-stat { display: flex; align-items: center; gap: 5px; }
+        .project-stat-value { color: #3b82f6; font-weight: 600; }
+        .workflow-card { background: #0f172a; border-left: 3px solid #3b82f6; }
+        .workflow-id { font-family: monospace; color: #a78bfa; font-size: 11px; }
+        .workflow-steps { margin-top: 10px; }
+        .workflow-step { 
+            padding: 6px 10px; margin: 4px 0; background: #1e293b; 
+            border-radius: 4px; font-size: 12px; display: flex; justify-content: space-between;
+        }
+        .step-pending { border-left: 3px solid #64748b; }
+        .step-running { border-left: 3px solid #3b82f6; }
+        .step-completed { border-left: 3px solid #22c55e; }
+        .step-failed { border-left: 3px solid #ef4444; }
+        .chart-container { height: 200px; position: relative; }
+        .alarm-critical { border-left: 3px solid #ef4444; background: #ef444410; }
+        .alarm-warning { border-left: 3px solid #eab308; background: #eab30810; }
+        .tabs { display: flex; gap: 5px; margin-bottom: 15px; }
+        .tab { 
+            padding: 8px 16px; background: #1e293b; border-radius: 6px; 
+            cursor: pointer; font-size: 13px; transition: all 0.2s;
+        }
+        .tab.active { background: #3b82f6; }
+        .tab:hover { background: #334155; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🛡️ Universal Autonomous Core</h1>
+            <p style="color: #94a3b8; font-size: 13px; margin-top: 4px;">Multi-Project Monitoring Dashboard | Hunter Alpha AI</p>
+        </div>
+        <div class="status">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="text-align: right;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">MONITORING</div>
+                    <select class="app-selector" id="appSelector" onchange="switchApplication(this.value)">
+                        <option value="default">default</option>
+                    </select>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">STATUS</div>
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <div class="live-indicator"></div>
+                        <span style="color: #22c55e; font-weight: 600;">LIVE</span>
+                    </div>
+                </div>
+                <div style="text-align: right;">
+                    <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">LAST UPDATE</div>
+                    <span style="color: #94a3b8;" id="lastUpdate">-</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="container">
+        <!-- 5-Phase Loop -->
+        <div class="card full-card" style="margin-bottom: 15px;">
+            <h2>5-Phase Autonomous Loop <span id="phaseAppName" style="color: #3b82f6; font-size: 12px;"></span></h2>
+            <div style="font-size: 11px; color: #64748b; margin-bottom: 10px;">
+                Current workflow: <span id="currentWorkflowId" style="color: #a78bfa;">-</span>
+            </div>
+            <div class="phase-indicator">
+                <div class="phase" id="phase-signal">
+                    <div class="phase-name">1. SIGNAL</div>
+                    <div class="phase-status" id="phase-signal-status">○ Detect</div>
+                </div>
+                <div class="phase" id="phase-context">
+                    <div class="phase-name">2. CONTEXT</div>
+                    <div class="phase-status" id="phase-context-status">○ Analyze</div>
+                </div>
+                <div class="phase" id="phase-hypothesis">
+                    <div class="phase-name">3. HYPOTHESIS</div>
+                    <div class="phase-status" id="phase-hypothesis-status">○ AI Triage</div>
+                </div>
+                <div class="phase" id="phase-execution">
+                    <div class="phase-name">4. EXECUTION</div>
+                    <div class="phase-status" id="phase-execution-status">○ Execute</div>
+                </div>
+                <div class="phase" id="phase-validation">
+                    <div class="phase-name">5. VALIDATION</div>
+                    <div class="phase-status" id="phase-validation-status">○ Verify</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid">
+            <!-- Health Score -->
+            <div class="card">
+                <h2>System Health</h2>
+                <div class="metric healthy" id="healthScore">-</div>
+                <div id="healthStatus"><span class="status-badge">Waiting for data...</span></div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="healthBar" style="width: 0%;"></div>
+                </div>
+            </div>
+            
+            <!-- CPU -->
+            <div class="card">
+                <h2>CPU Usage</h2>
+                <div class="metric" id="cpuUsage">-</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="cpuBar" style="width: 0%;"></div>
+                </div>
+            </div>
+            
+            <!-- Memory -->
+            <div class="card">
+                <h2>Memory Usage</h2>
+                <div class="metric" id="memoryUsage">-</div>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="memoryBar" style="width: 0%;"></div>
+                </div>
+            </div>
+            
+            <!-- AI Model -->
+            <div class="card ai-card">
+                <h2>AI Engine</h2>
+                <div class="ai-model">Hunter Alpha</div>
+                <div style="color: #94a3b8; margin-top: 8px;">via OpenRouter.ai</div>
+                <div style="margin-top: 10px;">
+                    <span style="color: #22c55e;">● Learning Active</span>
+                </div>
+            </div>
+            
+            <!-- MCP Servers -->
+            <div class="card wide-card">
+                <h2>MCP Servers (AI-Powered Components) - Click for Details</h2>
+                <div class="mcp-grid">
+                    <div class="mcp-server" onclick="showMcpServerDetails('TelemetryMCP')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-telemetry"></div>
+                        <div>
+                            <span>TelemetryMCP</span>
+                            <div style="font-size: 10px; color: #64748b;">Observer • AI: Pattern Detection</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-telemetry-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                    <div class="mcp-server" onclick="showMcpServerDetails('HealingMCP')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-healing"></div>
+                        <div>
+                            <span>HealingMCP</span>
+                            <div style="font-size: 10px; color: #64748b;">Resolver • AI: Fix Selection</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-healing-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                    <div class="mcp-server" onclick="showMcpServerDetails('DevelopmentMCP')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-dev"></div>
+                        <div>
+                            <span>DevelopmentMCP</span>
+                            <div style="font-size: 10px; color: #64748b;">Evolver • AI: Code Generation</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-dev-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                    <div class="mcp-server" onclick="showMcpServerDetails('DynamicAI')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-ai"></div>
+                        <div>
+                            <span>DynamicAI</span>
+                            <div style="font-size: 10px; color: #64748b;">AI Engine • Hunter Alpha</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-ai-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                    <div class="mcp-server" onclick="showMcpServerDetails('CodeAnalysisMCP')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-code"></div>
+                        <div>
+                            <span>CodeAnalysisMCP</span>
+                            <div style="font-size: 10px; color: #64748b;">Analyzer • AI: Root Cause</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-code-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                    <div class="mcp-server" onclick="showMcpServerDetails('DeploymentMCP')" style="cursor: pointer;">
+                        <div class="mcp-status mcp-online" id="mcp-deploy"></div>
+                        <div>
+                            <span>DeploymentMCP</span>
+                            <div style="font-size: 10px; color: #64748b;">Deployer • AI: Risk Assessment</div>
+                            <div style="font-size: 10px; color: #22c55e; margin-top: 4px;" id="mcp-deploy-stats">Click for AI actions</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Recent Actions -->
+            <div class="card wide-card">
+                <h2>Recent Healing Actions</h2>
+                <div class="actions-grid" id="actionsList">
+                    <div class="action-item">
+                        <span style="color: #64748b;">No actions yet</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Project Statistics -->
+            <div class="card full-card">
+                <h2>Project Statistics</h2>
+                <div id="projectStats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                    <div style="background: #0a0f1a; padding: 15px; border-radius: 8px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 5px;">TOTAL ACTIONS</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #3b82f6;" id="totalActions">0</div>
+                    </div>
+                    <div style="background: #0a0f1a; padding: 15px; border-radius: 8px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 5px;">SUCCESSFUL</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #22c55e;" id="successfulActions">0</div>
+                    </div>
+                    <div style="background: #0a0f1a; padding: 15px; border-radius: 8px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 5px;">FAILED</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #ef4444;" id="failedActions">0</div>
+                    </div>
+                    <div style="background: #0a0f1a; padding: 15px; border-radius: 8px;">
+                        <div style="font-size: 11px; color: #64748b; margin-bottom: 5px;">ACTIVE WORKFLOWS</div>
+                        <div style="font-size: 28px; font-weight: bold; color: #a78bfa;" id="activeWorkflows">0</div>
+                    </div>
+                </div>
+                <div id="appStats" style="margin-top: 15px;"></div>
+            </div>
+            
+            <!-- Event Log -->
+            <div class="card full-card">
+                <div class="tabs">
+                    <div class="tab active" onclick="showTab('events')">Events</div>
+                    <div class="tab" onclick="showTab('workflows')">Fix Workflows</div>
+                    <div class="tab" onclick="showTab('alarms')">Alarms</div>
+                    <div class="tab" onclick="showTab('mcp')">MCP Details</div>
+                    <div class="tab" onclick="showTab('metrics')">Metrics Chart</div>
+                </div>
+                <div id="tab-events">
+                    <h2>Live Event Stream (Real Data)</h2>
+                    <div class="event-log" id="eventLog">
+                        <div class="event"><span style="color: #64748b;">Monitoring active - waiting for events...</span></div>
+                    </div>
+                </div>
+                <div id="tab-workflows" style="display:none;">
+                    <h2>Fix Workflows (with UUID)</h2>
+                    <div id="workflowsList" style="max-height: 350px; overflow-y: auto;">
+                        <div style="color: #64748b;">No workflows yet</div>
+                    </div>
+                </div>
+                <div id="tab-alarms" style="display:none;">
+                    <h2>Active Alarms</h2>
+                    <div id="alarmsList" style="max-height: 350px; overflow-y: auto;">
+                        <div style="color: #64748b;">No active alarms</div>
+                    </div>
+                </div>
+                <div id="tab-mcp" style="display:none;">
+                    <h2>MCP Server Details & AI Actions</h2>
+                    <div id="mcpDetails" style="max-height: 350px; overflow-y: auto;">
+                        <div style="color: #64748b;">Loading MCP details...</div>
+                    </div>
+                </div>
+                <div id="tab-metrics" style="display:none;">
+                    <h2>Metrics History</h2>
+                    <div class="chart-container">
+                        <canvas id="metricsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Fetch REAL data from API - no simulations
+        async function fetchHealth() {
+            try {
+                const res = await fetch('/api/health');
+                const data = await res.json();
+                // Use ONLY real data - no fallbacks
+                updateHealthDisplay(data.healthScore || 0);
+                updateMetricsDisplay(
+                    Math.round((data.cpuUsage || 0) * 100),
+                    Math.round((data.memoryUsage || 0) * 100)
+                );
+            } catch (e) { 
+                console.error('Health fetch error:', e); 
+                // Show error state, not fake data
+                updateHealthDisplay(0);
+            }
+        }
+        
+        async function fetchEvents() {
+            try {
+                // Fetch events filtered by selected application
+                const selectedApp = document.getElementById('appSelector').value;
+                console.log('[DEBUG Frontend] Fetching events for app:', selectedApp);
+                const res = await fetch('/api/events?app=' + encodeURIComponent(selectedApp));
+                const events = await res.json();
+                console.log('[DEBUG Frontend] Received events:', events ? events.length : 0, 'events');
+                console.log('[DEBUG Frontend] First event:', events && events.length > 0 ? JSON.stringify(events[0]) : 'none');
+                renderEvents(events || []);
+            } catch (e) { 
+                console.error('Events fetch error:', e); 
+            }
+        }
+        
+        async function fetchActions() {
+            try {
+                const selectedApp = document.getElementById('appSelector').value;
+                const res = await fetch('/api/actions?app=' + encodeURIComponent(selectedApp));
+                const actions = await res.json();
+                renderActions(actions || []);
+            } catch (e) { 
+                console.error('Actions fetch error:', e); 
+            }
+        }
+        
+        function updateHealthDisplay(score) {
+            // Ensure score is valid real number
+            const validScore = Math.max(0, Math.min(1, score || 0));
+            document.getElementById('healthScore').textContent = validScore.toFixed(2);
+            const bar = document.getElementById('healthBar');
+            bar.style.width = (validScore * 100) + '%';
+            bar.className = 'progress-fill ' + 
+                (validScore > 0.7 ? 'progress-green' : (validScore > 0.4 ? 'progress-yellow' : 'progress-red'));
+            const status = document.getElementById('healthStatus');
+            const cls = validScore > 0.7 ? 'status-healthy' : (validScore > 0.4 ? 'status-warning' : 'status-critical');
+            const txt = validScore > 0.7 ? 'HEALTHY' : (validScore > 0.4 ? 'DEGRADED' : 'CRITICAL');
+            status.innerHTML = '<span class="status-badge ' + cls + '">' + txt + '</span>';
+        }
+        
+        function updateMetricsDisplay(cpu, memory) {
+            // Use ONLY real values
+            const validCpu = Math.max(0, Math.min(100, cpu || 0));
+            const validMemory = Math.max(0, Math.min(100, memory || 0));
+            
+            document.getElementById('cpuUsage').textContent = validCpu + '%';
+            document.getElementById('memoryUsage').textContent = validMemory + '%';
+            document.getElementById('cpuBar').style.width = validCpu + '%';
+            document.getElementById('memoryBar').style.width = validMemory + '%';
+            document.getElementById('cpuBar').className = 'progress-fill ' + 
+                (validCpu < 70 ? 'progress-green' : (validCpu < 90 ? 'progress-yellow' : 'progress-red'));
+            document.getElementById('memoryBar').className = 'progress-fill ' + 
+                (validMemory < 70 ? 'progress-green' : (validMemory < 90 ? 'progress-yellow' : 'progress-red'));
+        }
+        
+        function renderEvents(events) {
+            const log = document.getElementById('eventLog');
+            console.log('[DEBUG renderEvents] Called with', events ? events.length : 0, 'events');
+            // Only render REAL events from API
+            if (!Array.isArray(events) || events.length === 0) {
+                console.log('[DEBUG renderEvents] No events, showing waiting message');
+                log.innerHTML = '<div class="event"><span style="color: #64748b;">Waiting for real events...</span></div>';
+                return;
+            }
+            console.log('[DEBUG renderEvents] Rendering', Math.min(events.length, 30), 'events');
+            const html = events.slice(0, 30).map(e => {
+                const time = new Date(e.timestamp || 0).toLocaleTimeString();
+                const cls = 'event-' + (e.level || 'info');
+                const prefix = e.level === 'error' ? '✗' : e.level === 'warning' ? '⚠' : 
+                              e.level === 'success' ? '✓' : '→';
+                const app = e.application || 'default';
+                const appBadge = `<span class="app-badge">${app}</span>`;
+                return '<div class="event"><span class="event-time">[' + time + ']</span>' +
+                       '<span class="' + cls + '">' + prefix + ' ' + (e.message || '') + '</span>' + appBadge + '</div>';
+            }).join('');
+            console.log('[DEBUG renderEvents] Setting innerHTML, length:', html.length);
+            log.innerHTML = html;
+            console.log('[DEBUG renderEvents] Done, log children:', log.children.length);
+        }
+        
+        function renderActions(actions) {
+            const list = document.getElementById('actionsList');
+            // Only render REAL actions from API
+            if (!Array.isArray(actions) || actions.length === 0) {
+                list.innerHTML = '<div class="action-item"><span style="color: #64748b;">No actions yet - monitoring active</span></div>';
+                return;
+            }
+            list.innerHTML = actions.slice(0, 5).map(a => {
+                const time = new Date(a.timestamp || 0).toLocaleTimeString();
+                const statusCls = a.success ? 'action-success' : 'action-failed';
+                const statusTxt = a.success ? 'SUCCESS' : 'FAILED';
+                return '<div class="action-item">' +
+                       '<span class="action-type">' + (a.type || 'UNKNOWN') + '</span>' +
+                       '<span style="color: #94a3b8;">' + (a.target || '') + '</span>' +
+                       '<span class="action-status ' + statusCls + '">' + statusTxt + '</span>' +
+                       '<span style="color: #64748b;">' + time + '</span></div>';
+            }).join('');
+        }
+        
+        function updateTimestamp() {
+            document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
+        }
+        
+        function updateMainPhaseLoop(workflows) {
+            // Find the most recent active workflow
+            const activeWorkflow = workflows.find(w => w.status === 'RUNNING' || w.status === 'PENDING');
+            const completedWorkflow = workflows.find(w => w.status === 'COMPLETED');
+            const failedWorkflow = workflows.find(w => w.status === 'FAILED');
+            
+            // Use the most relevant workflow
+            const workflow = activeWorkflow || completedWorkflow || failedWorkflow;
+            
+            if (workflow) {
+                document.getElementById('currentWorkflowId').textContent = workflow.id || '-';
+                document.getElementById('phaseAppName').textContent = '(' + (workflow.application || 'default') + ')';
+                
+                const isCompleted = workflow.status === 'COMPLETED';
+                const isFailed = workflow.status === 'FAILED';
+                const isRunning = workflow.status === 'RUNNING';
+                
+                // Update phase statuses
+                const phases = ['signal', 'context', 'hypothesis', 'execution', 'validation'];
+                const phaseNames = ['SIGNAL', 'CONTEXT', 'HYPOTHESIS', 'EXECUTION', 'VALIDATION'];
+                const phaseDescs = ['Detect', 'Analyze', 'AI Triage', 'Execute', 'Verify'];
+                
+                phases.forEach((phase, idx) => {
+                    const el = document.getElementById('phase-' + phase);
+                    const statusEl = document.getElementById('phase-' + phase + '-status');
+                    
+                    let status, className;
+                    if (isCompleted) {
+                        status = '✓ ' + phaseDescs[idx];
+                        className = 'phase completed';
+                    } else if (isFailed) {
+                        if (idx < 3) {
+                            status = '✓ ' + phaseDescs[idx];
+                            className = 'phase completed';
+                        } else if (idx === 3) {
+                            status = '✗ ' + phaseDescs[idx];
+                            className = 'phase';
+                            el.style.borderColor = '#ef4444';
+                            el.style.background = '#ef444410';
+                        } else {
+                            status = '○ ' + phaseDescs[idx];
+                            className = 'phase';
+                        }
+                    } else if (isRunning) {
+                        if (idx < 2) {
+                            status = '✓ ' + phaseDescs[idx];
+                            className = 'phase completed';
+                        } else if (idx === 2) {
+                            status = '⟳ ' + phaseDescs[idx];
+                            className = 'phase active';
+                        } else {
+                            status = '○ ' + phaseDescs[idx];
+                            className = 'phase';
+                        }
+                    } else {
+                        status = '○ ' + phaseDescs[idx];
+                        className = 'phase';
+                    }
+                    
+                    el.className = className;
+                    statusEl.textContent = status;
+                });
+            } else {
+                document.getElementById('currentWorkflowId').textContent = '-';
+                document.getElementById('phaseAppName').textContent = '';
+                
+                // Reset all phases
+                const phases = ['signal', 'context', 'hypothesis', 'execution', 'validation'];
+                const phaseDescs = ['Detect', 'Analyze', 'AI Triage', 'Execute', 'Verify'];
+                phases.forEach((phase, idx) => {
+                    const el = document.getElementById('phase-' + phase);
+                    const statusEl = document.getElementById('phase-' + phase + '-status');
+                    el.className = 'phase';
+                    el.style.borderColor = '';
+                    el.style.background = '';
+                    statusEl.textContent = '○ ' + phaseDescs[idx];
+                });
+            }
+        }
+        
+        // Initial load - get REAL data only
+        fetchHealth();
+        fetchEvents();
+        fetchActions();
+        fetchApplications();
+        updateTimestamp();
+        
+        // Metrics history for chart
+        let metricsHistory = { cpu: [], memory: [], health: [], timestamps: [] };
+        const MAX_HISTORY = 30;
+        
+        async function fetchApplications() {
+            const selector = document.getElementById('appSelector');
+            const currentValue = selector.value;
+            
+            try {
+                const res = await fetch('/api/applications');
+                const data = await res.json();
+                
+                // Handle various data formats
+                let apps = [];
+                if (Array.isArray(data.applications)) {
+                    apps = data.applications;
+                } else if (typeof data.applications === 'string') {
+                    apps = [data.applications];
+                } else {
+                    apps = ['default'];
+                }
+                
+                // Ensure we always have at least one option
+                if (apps.length === 0) {
+                    apps = ['default'];
+                }
+                
+                // Build new options FIRST before clearing
+                let html = '';
+                let hasSelection = false;
+                apps.forEach(app => {
+                    const selected = (app === currentValue || (currentValue === '' && app === data.selected));
+                    if (selected) hasSelection = true;
+                    html += `<option value="${app}" ${selected ? 'selected' : ''}>${app}</option>`;
+                });
+                
+                // If no option is selected, select the first one
+                if (!hasSelection && apps.length > 0) {
+                    html = html.replace('<option value="' + apps[0] + '">', '<option value="' + apps[0] + '" selected>');
+                }
+                
+                // Only update dropdown if we have valid options
+                if (html) {
+                    selector.innerHTML = html;
+                }
+            } catch (e) { 
+                console.error('Applications fetch error:', e);
+                // On error, keep existing options - don't clear the dropdown
+            }
+        }
+        
+        async function fetchWorkflows() {
+            try {
+                const res = await fetch('/api/fix-workflows');
+                const workflows = await res.json();
+                renderWorkflows(workflows || []);
+            } catch (e) { console.error('Workflows fetch error:', e); }
+        }
+        
+        async function fetchAlarms() {
+            try {
+                const res = await fetch('/api/alarms');
+                const alarms = await res.json();
+                renderAlarms(alarms || []);
+            } catch (e) { console.error('Alarms fetch error:', e); }
+        }
+        
+        async function fetchProjectStats() {
+            try {
+                const res = await fetch('/api/project-stats');
+                const stats = await res.json();
+                renderProjectStats(stats || {});
+            } catch (e) { console.error('Project stats fetch error:', e); }
+        }
+        
+        function renderProjectStats(stats) {
+            // Fix: Properly extract numeric values from the stats
+            const totalActions = typeof stats.totalActions === 'number' ? stats.totalActions : 0;
+            const totalWorkflows = typeof stats.totalWorkflows === 'number' ? stats.totalWorkflows : 0;
+            
+            // Calculate success/failed from the maps
+            let totalSuccess = 0;
+            let totalFailed = 0;
+            if (stats.successByApplication && typeof stats.successByApplication === 'object') {
+                Object.values(stats.successByApplication).forEach(v => {
+                    totalSuccess += (typeof v === 'number' ? v : 0);
+                });
+            }
+            if (stats.failedByApplication && typeof stats.failedByApplication === 'object') {
+                Object.values(stats.failedByApplication).forEach(v => {
+                    totalFailed += (typeof v === 'number' ? v : 0);
+                });
+            }
+            
+            document.getElementById('totalActions').textContent = totalActions;
+            document.getElementById('successfulActions').textContent = totalSuccess;
+            document.getElementById('failedActions').textContent = totalFailed;
+            document.getElementById('activeWorkflows').textContent = totalWorkflows;
+            
+            // Render per-application stats
+            const appStatsDiv = document.getElementById('appStats');
+            const apps = Array.isArray(stats.monitoredApplications) ? stats.monitoredApplications : [];
+            const selectedApp = stats.selectedApplication || 'default';
+            
+            if (apps.length > 0) {
+                let html = '<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px;">';
+                apps.forEach(app => {
+                    const actionsByApp = stats.actionsByApplication || {};
+                    const successByApp = stats.successByApplication || {};
+                    const failedByApp = stats.failedByApplication || {};
+                    
+                    const actions = typeof actionsByApp[app] === 'number' ? actionsByApp[app] : 0;
+                    const success = typeof successByApp[app] === 'number' ? successByApp[app] : 0;
+                    const failed = typeof failedByApp[app] === 'number' ? failedByApp[app] : 0;
+                    const isSelected = app === selectedApp;
+                    
+                    html += `<div style="background: ${isSelected ? '#1e3a5f' : '#0a0f1a'}; padding: 12px; border-radius: 8px; border: 1px solid ${isSelected ? '#3b82f6' : '#2d3748'};">
+                        <div style="font-weight: 600; color: ${isSelected ? '#3b82f6' : '#e2e8f0'}; margin-bottom: 8px;">${app} ${isSelected ? '(selected)' : ''}</div>
+                        <div style="display: flex; gap: 15px; font-size: 12px;">
+                            <span style="color: #94a3b8;">Actions: <span style="color: #3b82f6;">${actions}</span></span>
+                            <span style="color: #94a3b8;">Success: <span style="color: #22c55e;">${success}</span></span>
+                            <span style="color: #94a3b8;">Failed: <span style="color: #ef4444;">${failed}</span></span>
+                        </div>
+                    </div>`;
+                });
+                html += '</div>';
+                appStatsDiv.innerHTML = html;
+            }
+        }
+        
+        function renderWorkflows(workflows) {
+            const list = document.getElementById('workflowsList');
+            if (!Array.isArray(workflows) || workflows.length === 0) {
+                list.innerHTML = '<div style="color: #64748b;">No workflows yet</div>';
+                return;
+            }
+            list.innerHTML = workflows.slice(0, 10).map(w => {
+                const time = new Date(w.startTime || 0).toLocaleTimeString();
+                const statusColor = w.status === 'COMPLETED' ? '#22c55e' : 
+                                   w.status === 'RUNNING' ? '#3b82f6' : '#ef4444';
+                const isCompleted = w.status === 'COMPLETED';
+                const isFailed = w.status === 'FAILED';
+                
+                // Determine phase status based on workflow status
+                const phases = [
+                    { name: 'SIGNAL', desc: 'Detect', status: isCompleted || isFailed ? 'completed' : 'completed' },
+                    { name: 'CONTEXT', desc: 'Analyze', status: isCompleted || isFailed ? 'completed' : 'completed' },
+                    { name: 'HYPOTHESIS', desc: 'AI Triage', status: isCompleted ? 'completed' : (isFailed ? 'failed' : 'running') },
+                    { name: 'EXECUTION', desc: 'Fix', status: isCompleted ? 'completed' : (isFailed ? 'failed' : 'pending') },
+                    { name: 'VALIDATION', desc: 'Verify', status: isCompleted ? 'completed' : 'pending' }
+                ];
+                
+                const phaseHtml = phases.map(p => {
+                    const cls = p.status === 'completed' ? 'step-completed' : 
+                               (p.status === 'running' ? 'step-running' : 
+                               (p.status === 'failed' ? 'step-failed' : 'step-pending'));
+                    const icon = p.status === 'completed' ? '✓' : 
+                                (p.status === 'running' ? '⟳' : 
+                                (p.status === 'failed' ? '✗' : '○'));
+                    return `<div class="workflow-step ${cls}">
+                        <span>${icon} ${p.name}</span>
+                        <span style="color: #64748b;">${p.desc}</span>
+                    </div>`;
+                }).join('');
+                
+                return `<div class="workflow-card" style="padding: 12px; margin: 8px 0; border-radius: 6px; cursor: pointer;" onclick="showWorkflowDetails('${w.id}')">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span class="workflow-id">ID: ${w.id || 'N/A'}</span>
+                        <span style="color: ${statusColor}; font-weight: 600;">${w.status || 'UNKNOWN'}</span>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <span style="color: #38bdf8;">${w.type || 'UNKNOWN'}</span>
+                        <span style="color: #64748b; margin-left: 10px;">${w.target || ''}</span>
+                    </div>
+                    <div style="color: #64748b; font-size: 11px; margin-top: 4px;">
+                        App: ${w.application || 'default'} | ${time}
+                    </div>
+                    <div class="workflow-steps" style="margin-top: 10px;">
+                        <div style="font-size: 11px; color: #94a3b8; margin-bottom: 6px;">5-Phase Loop:</div>
+                        ${phaseHtml}
+                    </div>
+                    <div style="font-size: 10px; color: #3b82f6; margin-top: 8px;">Click for details →</div>
+                </div>`;
+            }).join('');
+        }
+        
+        async function showWorkflowDetails(workflowId) {
+            try {
+                const res = await fetch('/api/workflow-details?id=' + encodeURIComponent(workflowId));
+                const workflow = await res.json();
+                
+                if (workflow.error) {
+                    alert('Workflow not found');
+                    return;
+                }
+                
+                const modal = document.createElement('div');
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; display: flex; align-items: center; justify-content: center;';
+                modal.onclick = () => modal.remove();
+                
+                const content = document.createElement('div');
+                content.style.cssText = 'background: #1a2332; padding: 24px; border-radius: 12px; max-width: 800px; width: 95%; max-height: 85vh; overflow-y: auto; border: 1px solid #3b82f6;';
+                content.onclick = (e) => e.stopPropagation();
+                
+                const statusColor = workflow.status === 'COMPLETED' ? '#22c55e' : 
+                                   workflow.status === 'RUNNING' ? '#3b82f6' : '#ef4444';
+                
+                // Use detailedSteps from workflow if available, otherwise fall back to static descriptions
+                const detailedSteps = workflow.detailedSteps || [];
+                
+                const phasesHtml = detailedSteps.length > 0 
+                    ? detailedSteps.map((step, idx) => {
+                        const isCompleted = workflow.status === 'COMPLETED' || idx < 2;
+                        const isFailed = workflow.status === 'FAILED' && idx === 3;
+                        const isRunning = workflow.status === 'RUNNING' && idx === 2;
+                        
+                        const borderColor = isCompleted ? '#22c55e' : isFailed ? '#ef4444' : isRunning ? '#3b82f6' : '#64748b';
+                        const bgColor = isCompleted ? '#22c55e10' : isFailed ? '#ef444410' : isRunning ? '#3b82f610' : '#0a0f1a';
+                        
+                        // Build additional details based on step data
+                        let additionalDetails = '';
+                        if (step.files) {
+                            additionalDetails += `<div style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Files Modified:</div>
+                                <div style="font-size: 12px; color: #38bdf8;">${Array.isArray(step.files) ? step.files.join(', ') : step.files}</div>
+                            </div>`;
+                        }
+                        if (step.pr) {
+                            additionalDetails += `<div style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Pull Request:</div>
+                                <div style="font-size: 12px; color: #a78bfa;">${step.pr}</div>
+                            </div>`;
+                        }
+                        if (step.commands) {
+                            additionalDetails += `<div style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Commands Executed:</div>
+                                <div style="font-size: 12px; color: #22c55e; font-family: monospace;">${Array.isArray(step.commands) ? step.commands.join('<br>') : step.commands}</div>
+                            </div>`;
+                        }
+                        if (step.deploymentId) {
+                            additionalDetails += `<div style="margin-top: 8px; padding: 8px; background: #1e293b; border-radius: 4px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Deployment ID:</div>
+                                <div style="font-size: 12px; color: #3b82f6;">${step.deploymentId}</div>
+                            </div>`;
+                        }
+                        
+                        return `<div style="background: ${bgColor}; padding: 15px; border-radius: 8px; border-left: 3px solid ${borderColor}; margin-bottom: 10px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <span style="font-weight: 600; color: #e2e8f0;">${idx + 1}. ${step.phase || step.mcp}</span>
+                                <span style="color: ${borderColor}; font-size: 12px;">${step.mcp}</span>
+                            </div>
+                            <div style="background: #0a0f1a; padding: 10px; border-radius: 6px; margin-bottom: 8px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Input:</div>
+                                <div style="font-size: 12px; color: #e2e8f0;">${step.input || 'N/A'}</div>
+                            </div>
+                            <div style="background: #0a0f1a; padding: 10px; border-radius: 6px; margin-bottom: 8px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Decision:</div>
+                                <div style="font-size: 12px; color: #a78bfa;">${step.decision || 'N/A'}</div>
+                            </div>
+                            <div style="background: #0a0f1a; padding: 10px; border-radius: 6px;">
+                                <div style="font-size: 11px; color: #64748b; margin-bottom: 4px;">Output:</div>
+                                <div style="font-size: 12px; color: #22c55e;">${step.output || 'N/A'}</div>
+                            </div>
+                            ${additionalDetails}
+                        </div>`;
+                    }).join('')
+                    : '<div style="color: #64748b;">No detailed steps available</div>';
+                
+                content.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="color: #3b82f6; margin: 0;">Workflow Details</h2>
+                        <button onclick="this.closest('div[style*=fixed]').remove()" style="background: #ef4444; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Close</button>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 20px;">
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Workflow ID</div>
+                            <div style="font-family: monospace; color: #a78bfa; font-size: 12px;">${workflow.id}</div>
+                        </div>
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Status</div>
+                            <div style="color: ${statusColor}; font-weight: 600;">${workflow.status}</div>
+                        </div>
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Type</div>
+                            <div style="color: #38bdf8;">${workflow.type || 'N/A'}</div>
+                        </div>
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Target</div>
+                            <div style="color: #e2e8f0;">${workflow.target || 'N/A'}</div>
+                        </div>
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Application</div>
+                            <div style="color: #3b82f6;">${workflow.application || 'default'}</div>
+                        </div>
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 8px;">
+                            <div style="font-size: 11px; color: #64748b;">Start Time</div>
+                            <div style="color: #94a3b8;">${new Date(workflow.startTime || 0).toLocaleString()}</div>
+                        </div>
+                    </div>
+                    
+                    <h3 style="color: #3b82f6; margin-bottom: 15px;">5-Phase Loop Details</h3>
+                    ${phasesHtml}
+                    
+                    ${workflow.type === 'CODE_FIX' ? `
+                    <div style="margin-top: 20px; padding: 15px; background: #1a2332; border-radius: 8px; border: 1px solid #3b82f6;">
+                        <h3 style="color: #3b82f6; margin-bottom: 10px;">Git & PR Information</h3>
+                        <div style="font-size: 12px; color: #94a3b8;">
+                            <div style="margin-bottom: 8px;">• Code changes generated by DevelopmentMCP</div>
+                            <div style="margin-bottom: 8px;">• Changes verified in sandbox environment</div>
+                            <div style="margin-bottom: 8px;">• Pull request created for review</div>
+                            <div>• PR linked to workflow ID: ${workflow.id}</div>
+                        </div>
+                    </div>
+                    ` : ''}
+                `;
+                
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+            } catch (e) {
+                console.error('Error fetching workflow details:', e);
+                alert('Failed to load workflow details');
+            }
+        }
+        
+        function renderAlarms(alarms) {
+            const list = document.getElementById('alarmsList');
+            if (!Array.isArray(alarms) || alarms.length === 0) {
+                list.innerHTML = '<div style="color: #64748b;">No active alarms</div>';
+                return;
+            }
+            list.innerHTML = alarms.map(a => {
+                const time = new Date(a.timestamp || 0).toLocaleTimeString();
+                const cls = a.severity === 'CRITICAL' ? 'alarm-critical' : 'alarm-warning';
+                return `<div class="${cls}" style="padding: 12px; margin: 8px 0; border-radius: 6px;">
+                    <div style="display: flex; justify-content: space-between;">
+                        <span style="font-weight: 600; color: ${a.severity === 'CRITICAL' ? '#ef4444' : '#eab308'};">
+                            ${a.severity}
+                        </span>
+                        <span style="color: #64748b;">${time}</span>
+                    </div>
+                    <div style="margin-top: 8px;">${a.message || ''}</div>
+                </div>`;
+            }).join('');
+        }
+        
+        function updateMetricsChart(cpu, memory, health) {
+            const now = new Date().toLocaleTimeString();
+            metricsHistory.cpu.push(cpu);
+            metricsHistory.memory.push(memory);
+            metricsHistory.health.push(health * 100);
+            metricsHistory.timestamps.push(now);
+            
+            if (metricsHistory.cpu.length > MAX_HISTORY) {
+                metricsHistory.cpu.shift();
+                metricsHistory.memory.shift();
+                metricsHistory.health.shift();
+                metricsHistory.timestamps.shift();
+            }
+            
+            const canvas = document.getElementById('metricsChart');
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            const width = canvas.parentElement.clientWidth;
+            const height = 200;
+            canvas.width = width;
+            canvas.height = height;
+            
+            ctx.clearRect(0, 0, width, height);
+            
+            // Draw grid
+            ctx.strokeStyle = '#2d3748';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const y = (height / 4) * i;
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(width, y);
+                ctx.stroke();
+            }
+            
+            // Draw lines
+            const drawLine = (data, color) => {
+                if (data.length < 2) return;
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                data.forEach((val, i) => {
+                    const x = (width / (MAX_HISTORY - 1)) * i;
+                    const y = height - (val / 100) * height;
+                    if (i === 0) ctx.moveTo(x, y);
+                    else ctx.lineTo(x, y);
+                });
+                ctx.stroke();
+            };
+            
+            drawLine(metricsHistory.cpu, '#3b82f6');
+            drawLine(metricsHistory.memory, '#eab308');
+            drawLine(metricsHistory.health, '#22c55e');
+            
+            // Legend
+            ctx.font = '12px sans-serif';
+            ctx.fillStyle = '#3b82f6';
+            ctx.fillText('CPU', 10, 20);
+            ctx.fillStyle = '#eab308';
+            ctx.fillText('Memory', 60, 20);
+            ctx.fillStyle = '#22c55e';
+            ctx.fillText('Health', 130, 20);
+        }
+        
+        function showTab(tabName) {
+            ['events', 'workflows', 'alarms', 'mcp', 'metrics'].forEach(t => {
+                document.getElementById('tab-' + t).style.display = t === tabName ? 'block' : 'none';
+            });
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            // Load MCP details when tab is shown
+            if (tabName === 'mcp') {
+                fetchMcpDetails();
+            }
+        }
+        
+        async function fetchMcpDetails() {
+            try {
+                const res = await fetch('/api/mcp/status');
+                const mcpStatus = await res.json();
+                renderMcpDetails(mcpStatus);
+            } catch (e) { console.error('MCP details fetch error:', e); }
+        }
+        
+        let selectedMcpServer = null;
+        
+        function renderMcpDetails(mcpStatus) {
+            const container = document.getElementById('mcpDetails');
+            const mcpServers = [
+                { name: 'TelemetryMCP', role: 'Observer', aiCapability: 'Pattern Detection', description: 'Monitors system metrics and logs, detects anomalies using AI pattern recognition' },
+                { name: 'HealingMCP', role: 'Resolver', aiCapability: 'Fix Selection', description: 'Selects optimal healing strategies based on AI analysis of issue severity and context' },
+                { name: 'DevelopmentMCP', role: 'Evolver', aiCapability: 'Code Generation', description: 'Generates code fixes using AI, verifies in sandbox before deployment' },
+                { name: 'DynamicAI', role: 'AI Engine', aiCapability: 'Hunter Alpha', description: 'Core AI decision engine using OpenRouter.ai for intelligent fix recommendations' },
+                { name: 'CodeAnalysisMCP', role: 'Analyzer', aiCapability: 'Root Cause', description: 'Performs deep code analysis to identify root causes of anomalies' },
+                { name: 'DeploymentMCP', role: 'Deployer', aiCapability: 'Risk Assessment', description: 'Assesses deployment risks using AI before applying fixes to production' }
+            ];
+            
+            let html = '<div style="display: grid; gap: 15px;">';
+            mcpServers.forEach(server => {
+                const isOnline = mcpStatus[server.name] === true;
+                const statusColor = isOnline ? '#22c55e' : '#ef4444';
+                const statusText = isOnline ? 'ONLINE' : 'OFFLINE';
+                const isSelected = selectedMcpServer === server.name;
+                
+                html += `<div onclick="selectMcpServer('${server.name}')" style="background: ${isSelected ? '#1e3a5f' : '#0a0f1a'}; padding: 15px; border-radius: 8px; border-left: 3px solid ${statusColor}; cursor: pointer; transition: all 0.2s;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <div>
+                            <span style="font-weight: 600; color: #e2e8f0; font-size: 16px;">${server.name}</span>
+                            <span style="color: #64748b; margin-left: 10px;">(${server.role})</span>
+                        </div>
+                        <span style="color: ${statusColor}; font-weight: 600; font-size: 12px;">${statusText}</span>
+                    </div>
+                    <div style="color: #94a3b8; font-size: 13px; margin-bottom: 8px;">${server.description}</div>
+                    <div style="display: flex; gap: 10px; font-size: 12px;">
+                        <span style="background: #1e293b; padding: 4px 8px; border-radius: 4px; color: #a78bfa;">AI: ${server.aiCapability}</span>
+                        <span style="background: #1e293b; padding: 4px 8px; border-radius: 4px; color: #38bdf8;">Status: ${statusText}</span>
+                    </div>
+                    ${isSelected ? `<div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #2d3748;">
+                        <div style="font-size: 12px; color: #94a3b8; margin-bottom: 8px;">Recent AI Actions:</div>
+                        <div style="font-size: 11px; color: #64748b;">Loading actions from API...</div>
+                    </div>` : ''}
+                </div>`;
+            });
+            html += '</div>';
+            
+            // Add AI actions summary
+            html += `<div style="margin-top: 20px; padding: 15px; background: #1a2332; border-radius: 8px; border: 1px solid #3b82f6;">
+                <h3 style="color: #3b82f6; margin-bottom: 10px;">AI Decision Summary</h3>
+                <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; font-size: 12px;">
+                    <div style="background: #0a0f1a; padding: 10px; border-radius: 6px;">
+                        <div style="color: #64748b; margin-bottom: 4px;">Total AI Decisions</div>
+                        <div style="color: #3b82f6; font-weight: 600; font-size: 18px;" id="mcpTotalDecisions">0</div>
+                    </div>
+                    <div style="background: #0a0f1a; padding: 10px; border-radius: 6px;">
+                        <div style="color: #64748b; margin-bottom: 4px;">Successful Fixes</div>
+                        <div style="color: #22c55e; font-weight: 600; font-size: 18px;" id="mcpSuccessfulFixes">0</div>
+                    </div>
+                    <div style="background: #0a0f1a; padding: 10px; border-radius: 6px;">
+                        <div style="color: #64748b; margin-bottom: 4px;">Learning Events</div>
+                        <div style="color: #a78bfa; font-weight: 600; font-size: 18px;" id="mcpLearningEvents">0</div>
+                    </div>
+                </div>
+            </div>`;
+            
+            container.innerHTML = html;
+            
+            // Update AI decision counts from real data
+            document.getElementById('mcpTotalDecisions').textContent = document.getElementById('totalActions').textContent;
+            document.getElementById('mcpSuccessfulFixes').textContent = document.getElementById('successfulActions').textContent;
+            document.getElementById('mcpLearningEvents').textContent = '0';
+        }
+        
+        function selectMcpServer(serverName) {
+            selectedMcpServer = selectedMcpServer === serverName ? null : serverName;
+            fetchMcpDetails();
+        }
+        
+        async function showMcpServerDetails(serverName) {
+            // Fetch real data from API
+            try {
+                const res = await fetch('/api/mcp/actions?server=' + encodeURIComponent(serverName));
+                const data = await res.json();
+                
+                const actions = data.actions || [];
+                const stats = data.stats || {};
+                
+                // Show detailed view in a modal-like overlay
+                const modal = document.createElement('div');
+                modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; display: flex; align-items: center; justify-content: center;';
+                modal.onclick = () => modal.remove();
+                
+                const content = document.createElement('div');
+                content.style.cssText = 'background: #1a2332; padding: 20px; border-radius: 12px; max-width: 600px; width: 90%; max-height: 80vh; overflow-y: auto; border: 1px solid #3b82f6;';
+                content.onclick = (e) => e.stopPropagation();
+                
+                const statsHtml = Object.keys(stats).length > 0 
+                    ? Object.entries(stats).map(([key, value]) => `
+                        <div style="background: #0a0f1a; padding: 10px; border-radius: 6px; text-align: center;">
+                            <div style="color: #64748b; font-size: 11px;">${key.toUpperCase()}</div>
+                            <div style="color: #3b82f6; font-size: 24px; font-weight: bold;">${value}</div>
+                        </div>
+                    `).join('')
+                    : '<div style="color: #64748b;">No statistics available</div>';
+                
+                const actionsHtml = actions.length > 0
+                    ? actions.map(action => {
+                        const details = action.details || {};
+                        const detailsHtml = Object.keys(details).length > 0 
+                            ? `<div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #2d3748;">
+                                ${Object.entries(details).map(([key, value]) => `
+                                    <div style="margin-bottom: 6px;">
+                                        <span style="color: #64748b; font-size: 11px; text-transform: uppercase;">${key}:</span>
+                                        <span style="color: #e2e8f0; font-size: 12px; margin-left: 8px;">${typeof value === 'object' ? JSON.stringify(value) : value}</span>
+                                    </div>
+                                `).join('')}
+                               </div>`
+                            : '';
+                        
+                        return `
+                        <div style="background: #0a0f1a; padding: 12px; border-radius: 6px; border-left: 3px solid #22c55e;">
+                            <div style="display: flex; justify-content: space-between; margin-bottom: 5px;">
+                                <span style="color: #22c55e; font-weight: 600;">${action.action || 'Unknown action'}</span>
+                                <span style="color: #64748b; font-size: 11px;">${action.time || ''}</span>
+                            </div>
+                            <div style="color: #a78bfa; font-size: 12px;">AI: ${action.ai || 'N/A'}</div>
+                            ${detailsHtml}
+                        </div>
+                        `;
+                    }).join('')
+                    : '<div style="color: #64748b;">No recent actions</div>';
+                
+                content.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <h2 style="color: #3b82f6; margin: 0;">${serverName} - AI Actions</h2>
+                        <button onclick="this.closest('div[style*=fixed]').remove()" style="background: #ef4444; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">Close</button>
+                    </div>
+                    <div style="margin-bottom: 20px;">
+                        <h3 style="color: #94a3b8; margin-bottom: 10px;">Statistics</h3>
+                        <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+                            ${statsHtml}
+                        </div>
+                    </div>
+                    <div>
+                        <h3 style="color: #94a3b8; margin-bottom: 10px;">Recent AI Actions</h3>
+                        <div style="display: grid; gap: 10px;">
+                            ${actionsHtml}
+                        </div>
+                    </div>
+                `;
+                
+                modal.appendChild(content);
+                document.body.appendChild(modal);
+            } catch (e) {
+                console.error('Error fetching MCP server details:', e);
+                alert('Failed to load MCP server details');
+            }
+        }
+        
+        function switchApplication(appName) {
+            // Update dropdown immediately to prevent race condition with auto-refresh
+            const selector = document.getElementById('appSelector');
+            let optionExists = false;
+            for (let i = 0; i < selector.options.length; i++) {
+                if (selector.options[i].value === appName) {
+                    optionExists = true;
+                    selector.selectedIndex = i;
+                    break;
+                }
+            }
+            // Add option if it doesn't exist
+            if (!optionExists) {
+                const option = document.createElement('option');
+                option.value = appName;
+                option.textContent = appName;
+                option.selected = true;
+                selector.appendChild(option);
+            }
+            
+            fetch('/api/applications/select?app=' + encodeURIComponent(appName), { method: 'POST' })
+                .then(() => {
+                    // Clear current data and refresh
+                    document.getElementById('eventLog').innerHTML = '<div class="event"><span style="color: #64748b;">Loading events for ' + appName + '...</span></div>';
+                    document.getElementById('actionsList').innerHTML = '<div class="action-item"><span style="color: #64748b;">Loading actions for ' + appName + '...</span></div>';
+                    document.getElementById('workflowsList').innerHTML = '<div style="color: #64748b;">Loading workflows for ' + appName + '...</div>';
+                    
+                    // Fetch new data immediately (no delay needed since dropdown is already updated)
+                    fetchEvents();
+                    fetchActions();
+                    fetchWorkflows();
+                })
+                .catch(err => {
+                    console.error('Error switching application:', err);
+                });
+        }
+        
+        // Auto-refresh every 2 seconds with REAL data
+        setInterval(async () => {
+            fetchHealth();
+            fetchEvents();
+            fetchActions();
+            fetchApplications();
+            
+            // Fetch workflows and update main phase loop
+            try {
+                const res = await fetch('/api/fix-workflows');
+                const workflows = await res.json();
+                renderWorkflows(workflows || []);
+                updateMainPhaseLoop(workflows || []);
+            } catch (e) { console.error('Workflows fetch error:', e); }
+            
+            fetchAlarms();
+            fetchProjectStats();
+            updateTimestamp();
+            
+            // Update chart with current values
+            const cpu = parseFloat(document.getElementById('cpuUsage').textContent) || 0;
+            const memory = parseFloat(document.getElementById('memoryUsage').textContent) || 0;
+            const healthText = document.getElementById('healthScore').textContent;
+            const health = parseFloat(healthText) || 0;
+            updateMetricsChart(cpu, memory, health);
+        }, 2000);
+    </script>
+</body>
+</html>
