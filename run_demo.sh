@@ -8,7 +8,9 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build/classes"
 SRC_DIR="$SCRIPT_DIR/src/main/java"
-DEMO_CLASS="com.blacklight.uac.demo.WorkingDemo"
+WORKING_DEMO_CLASS="com.blacklight.uac.demo.WorkingDemo"
+LOCAL_MONITOR_CLASS="com.blacklight.uac.demo.LocalSystemsMonitorDemo"
+DEMO_CLASS="$WORKING_DEMO_CLASS"
 LOG_FILE="/tmp/uac-demo.log"
 
 # Color codes
@@ -43,11 +45,20 @@ print_error() {
 cleanup_old_process() {
     print_info "Checking for old demo processes..."
     if pgrep -f "$DEMO_CLASS" > /dev/null; then
-        print_warning "Found existing WorkingDemo process, terminating..."
+        print_warning "Found existing process for $DEMO_CLASS, terminating..."
         pkill -f "$DEMO_CLASS" 2>/dev/null || true
         sleep 1
         print_step "Old process terminated"
     fi
+}
+
+# Stop both modes so switching is predictable.
+stop_all_modes() {
+    for cls in "$WORKING_DEMO_CLASS" "$LOCAL_MONITOR_CLASS"; do
+        if pgrep -f "$cls" > /dev/null; then
+            pkill -f "$cls" 2>/dev/null || true
+        fi
+    done
 }
 
 compile_sources() {
@@ -75,19 +86,20 @@ compile_sources() {
 }
 
 verify_demo_class() {
-    print_info "Verifying WorkingDemo class..."
+    print_info "Verifying demo class..."
 
-    class_path="${BUILD_DIR}/com/blacklight/uac/demo/WorkingDemo.class"
+    class_rel=$(echo "$DEMO_CLASS" | tr '.' '/')
+    class_path="${BUILD_DIR}/${class_rel}.class"
     if [ ! -f "$class_path" ]; then
-        print_error "WorkingDemo.class not found at $class_path"
+        print_error "Class not found at $class_path"
         exit 1
     fi
 
-    print_step "WorkingDemo class verified"
+    print_step "Demo class verified"
 }
 
 start_demo() {
-    print_info "Starting WorkingDemo..."
+    print_info "Starting demo class: $DEMO_CLASS"
 
     java -cp "$BUILD_DIR" "$DEMO_CLASS" > "$LOG_FILE" 2>&1 &
     DEMO_PID=$!
@@ -127,6 +139,17 @@ show_dashboard_info() {
     echo -e "   3. Click 'Code Fixes' or 'Ops Fixes' to filter"
     echo -e "   4. Click any fix or alarm to see full details"
     echo ""
+    echo -e "${BLUE}📋 Mode:${NC}"
+    if [ "$DEMO_CLASS" = "$LOCAL_MONITOR_CLASS" ]; then
+        echo -e "   • Local Systems Monitor (config/systems/*.yaml)"
+        echo -e "   • Attaches already-running local apps dynamically"
+        echo -e "   • Polls health endpoints + tails app logs"
+        echo -e "   • Generates alarms and healing flows live"
+    else
+        echo -e "   • Working demo data mode"
+        echo -e "   • Seeded systems and flows"
+        echo -e "   • Interactive filtering and details"
+    fi
     echo -e "${GREEN}════════════════════════════════════════════════════════════════${NC}"
     echo ""
 }
@@ -138,6 +161,7 @@ Usage: $0 [OPTIONS]
 
 OPTIONS:
     -h, --help      Show this help message
+    --local-systems Run dynamic monitor using config/systems/*.yaml
     -c, --clean     Clean build directory before compiling
     -l, --logs      Show demo logs in real-time (tail -f)
     -s, --stop      Stop running demo
@@ -145,8 +169,11 @@ OPTIONS:
     -v, --verify    Only verify demo is running (no start)
 
 EXAMPLES:
-    # Run normally (compile and start)
+    # Run seeded working demo mode
     $0
+
+    # Run dynamic local systems mode
+    $0 --local-systems
 
     # Clean build and restart
     $0 --clean --restart
@@ -165,8 +192,8 @@ EOF
 
 stop_demo() {
     print_info "Stopping demo..."
-    if pgrep -f "$DEMO_CLASS" > /dev/null; then
-        pkill -f "$DEMO_CLASS" 2>/dev/null || true
+    if pgrep -f "$WORKING_DEMO_CLASS" > /dev/null || pgrep -f "$LOCAL_MONITOR_CLASS" > /dev/null; then
+        stop_all_modes
         sleep 1
         print_step "Demo stopped"
     else
@@ -175,12 +202,20 @@ stop_demo() {
 }
 
 verify_running() {
-    if pgrep -f "$DEMO_CLASS" > /dev/null; then
-        pid=$(pgrep -f "$DEMO_CLASS" | head -1)
+    if pgrep -f "$WORKING_DEMO_CLASS" > /dev/null || pgrep -f "$LOCAL_MONITOR_CLASS" > /dev/null; then
+        if pgrep -f "$LOCAL_MONITOR_CLASS" > /dev/null; then
+            active_class="$LOCAL_MONITOR_CLASS"
+            active_log="/tmp/uac-local-monitor.log"
+        else
+            active_class="$WORKING_DEMO_CLASS"
+            active_log="/tmp/uac-demo.log"
+        fi
+        pid=$(pgrep -f "$active_class" | head -1)
         print_step "Demo is running (PID: $pid)"
         echo ""
+        echo -e "${BLUE}Class:${NC} ${YELLOW}$active_class${NC}"
         echo -e "${BLUE}Dashboard:${NC} ${YELLOW}http://localhost:8888${NC}"
-        echo -e "${BLUE}Logs:${NC} ${YELLOW}tail -f $LOG_FILE${NC}"
+        echo -e "${BLUE}Logs:${NC} ${YELLOW}tail -f $active_log${NC}"
         return 0
     else
         print_error "Demo is not running"
@@ -199,12 +234,17 @@ main() {
     STOP_ONLY=false
     RESTART=false
     VERIFY_ONLY=false
+    LOCAL_SYSTEMS=false
 
     while [[ $# -gt 0 ]]; do
         case $1 in
             -h|--help)
                 show_help
                 exit 0
+                ;;
+            --local-systems)
+                LOCAL_SYSTEMS=true
+                shift
                 ;;
             -c|--clean)
                 CLEAN_BUILD=true
@@ -233,6 +273,14 @@ main() {
                 ;;
         esac
     done
+
+    if [ "$LOCAL_SYSTEMS" = true ]; then
+        DEMO_CLASS="$LOCAL_MONITOR_CLASS"
+        LOG_FILE="/tmp/uac-local-monitor.log"
+    else
+        DEMO_CLASS="$WORKING_DEMO_CLASS"
+        LOG_FILE="/tmp/uac-demo.log"
+    fi
 
     print_header
     echo ""
@@ -280,4 +328,3 @@ main() {
 }
 
 main "$@"
-

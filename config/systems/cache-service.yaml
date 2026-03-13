@@ -1,0 +1,47 @@
+system:
+  name: cache-service
+  id: cache-service-local
+  environment: development
+  description: In-memory cache with intentional eviction issue
+
+monitoring:
+  enabled: true
+  health_check_interval: 30s
+  log_scan_interval: 10s
+
+logs:
+  location: /tmp/sample-apps/cache-service/logs/cache-service.log
+  format: plain
+  patterns:
+    error: "ERROR|Exception|OutOfMemory"
+    warning: "WARN|Cache"
+
+health_endpoint:
+  url: http://localhost:8083/health
+  interval: 30s
+
+git:
+  repository: git@github.com:afsinb/cache-service.git
+  branch: main
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: local
+  restart_command: "pkill -f 'java CacheService' && sleep 1 && cd /tmp/sample-apps/cache-service && java CacheService > logs/cache-service.log 2>&1 &"
+
+thresholds:
+  memory_percent: 75
+  cache_size: 10000
+
+recovery:
+  enabled: true
+  operational_fixes: true
+  code_fixes: true
+  max_retries: 2
+
+tags:
+  - sample
+  - cache
+  - in-memory
+  - cache-eviction
+

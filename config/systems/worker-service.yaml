@@ -1,0 +1,47 @@
+system:
+  name: worker-service
+  id: worker-service-local
+  environment: development
+  description: Background worker with intentional memory leak
+
+monitoring:
+  enabled: true
+  health_check_interval: 30s
+  log_scan_interval: 10s
+
+logs:
+  location: /tmp/sample-apps/worker-service/logs/worker-service.log
+  format: plain
+  patterns:
+    error: "ERROR|Exception|OutOfMemory"
+    warning: "WARN|Memory"
+
+health_endpoint:
+  url: http://localhost:8082/health
+  interval: 30s
+
+git:
+  repository: git@github.com:afsinb/worker-service.git
+  branch: main
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: local
+  restart_command: "pkill -f 'java WorkerService' && sleep 1 && cd /tmp/sample-apps/worker-service && java WorkerService > logs/worker-service.log 2>&1 &"
+
+thresholds:
+  memory_percent: 80
+  processing_time_ms: 1000
+
+recovery:
+  enabled: true
+  operational_fixes: true
+  code_fixes: true
+  max_retries: 2
+
+tags:
+  - sample
+  - worker
+  - background-job
+  - memory-leak
+

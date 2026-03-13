@@ -1,0 +1,46 @@
+system:
+  name: payment-api
+  id: payment-api-local
+  environment: development
+  description: Payment processing service with intentional bugs
+
+monitoring:
+  enabled: true
+  health_check_interval: 30s
+  log_scan_interval: 10s
+
+logs:
+  location: /tmp/sample-apps/payment-api/logs/payment-api.log
+  format: plain
+  patterns:
+    error: "ERROR|Exception|NullPointerException|ArithmeticException"
+    warning: "WARN"
+
+health_endpoint:
+  url: http://localhost:8081/health
+  interval: 30s
+
+git:
+  repository: git@github.com:afsinb/payment-api.git
+  branch: main
+  token_env: GITHUB_TOKEN
+
+deployment:
+  type: local
+  restart_command: "pkill -f 'java PaymentService' && sleep 1 && cd /tmp/sample-apps/payment-api && java PaymentService > logs/payment-api.log 2>&1 &"
+
+thresholds:
+  error_rate: 0.05
+  response_time_ms: 2000
+
+recovery:
+  enabled: true
+  operational_fixes: true
+  code_fixes: true
+  max_retries: 3
+
+tags:
+  - sample
+  - payment
+  - financial
+

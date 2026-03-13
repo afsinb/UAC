@@ -468,9 +468,13 @@ async function showFlow(flowId) {
         const flow = await fetch('/api/flows/' + flowId).then(r => r.json());
         const sevColor = s => s==='CRITICAL'?'f85149':s==='HIGH'?'d29922':s==='MEDIUM'?'e3b341':'3fb950';
         const steps = (flow.steps || []).map(s => {
-            const detailRows = s.details ? Object.entries(s.details).map(([k,v]) =>
-                `<div style="display:flex;gap:8px"><span style="color:#7d8590;min-width:90px">${k}:</span><span style="color:#e8eaed;word-break:break-all">${v}</span></div>`
-            ).join('') : '';
+            const detailRows = s.details ? Object.entries(s.details).map(([k,v]) => {
+                const isUrl = typeof v === 'string' && (v.startsWith('https://') || v.startsWith('http://'));
+                const rendered = isUrl
+                    ? `<a href="${v}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff;text-decoration:underline;word-break:break-all">${v}</a>`
+                    : `<span style="color:#e8eaed;word-break:break-all">${v}</span>`;
+                return `<div style="display:flex;gap:8px"><span style="color:#7d8590;min-width:90px">${k}:</span>${rendered}</div>`;
+            }).join('') : '';
             return `
             <div style="background:#0f1419;border-left:3px solid #0969da;border-radius:4px;padding:10px;margin:8px 0">
                 <div style="display:flex;justify-content:space-between;margin-bottom:5px">
