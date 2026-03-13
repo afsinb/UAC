@@ -1,4 +1,6 @@
-# DEVELOPER_GUIDE.md - Setup, Running & Troubleshooting
+# Developer Guide
+
+Use this guide for local setup, demo execution, development workflows, and troubleshooting.
 
 ## Quick Start
 
@@ -382,9 +384,11 @@ netstat -an | grep 8888
 
 ---
 
-**Documentation:**
-- README.md - Quick start & overview
-- ARCHITECTURE.md - System design
-- FEATURES.md - Complete feature list
-- DEVELOPER_GUIDE.md (this file) - Setup & troubleshooting
+## Related docs
+
+- `README.md` - Quick start and documentation hub
+- `USER_GUIDE.md` - Running and using the dashboard
+- `ARCHITECTURE.md` - System design
+- `FEATURES.md` - Complete feature list
+- `AGENT.md` - AI-agent project context
 

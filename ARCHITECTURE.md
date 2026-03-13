@@ -1,4 +1,6 @@
-# ARCHITECTURE.md - System Design & Components
+# Architecture Guide
+
+Use this guide to understand the UAC control loop, core components, data models, and implementation structure.
 
 ## System Overview
 
@@ -322,8 +324,12 @@ mvn clean install                 # Full rebuild
 
 ---
 
-**See also:**
-- docs/agent_blueprint.md - Original architecture
-- FEATURES.md - Detailed feature descriptions
-- DEVELOPER_GUIDE.md - Setup and troubleshooting
+## Related docs
+
+- `README.md` - Project overview and documentation hub
+- `USER_GUIDE.md` - Dashboard operation guide
+- `DEVELOPER_GUIDE.md` - Setup and troubleshooting
+- `FEATURES.md` - Detailed feature descriptions
+- `AGENT.md` - AI contributor context
+- `docs/agent_blueprint.md` - Original architecture prompt
 

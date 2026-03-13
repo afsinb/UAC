@@ -1,4 +1,6 @@
-# FEATURES.md - Complete Feature List & Demo Data
+# Feature Guide
+
+Use this guide to understand the implemented dashboard capabilities, demo scenarios, and recovery examples in UAC.
 
 ## Dashboard Features
 
@@ -334,5 +336,11 @@ Dashboard View
 
 ---
 
-See README.md for quick start and DEVELOPER_GUIDE.md for setup instructions.
+## Related docs
+
+- `README.md` - Quick start and documentation hub
+- `USER_GUIDE.md` - Dashboard usage walkthrough
+- `DEVELOPER_GUIDE.md` - Setup and troubleshooting
+- `ARCHITECTURE.md` - Component design and control flow
+- `AGENT.md` - AI-agent context and workflow guardrails
 
