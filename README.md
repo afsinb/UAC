@@ -15,6 +15,13 @@ A non-invasive autonomous monitoring layer that automatically detects, diagnoses
 ✅ **Self-Heal** - Automatic infrastructure recovery  
 ✅ **Self-Deploy** - Code patches via CI/CD  
 
+### Recent Changes (March 2026)
+- `143ff2a` Persisted newly learned anomaly rules and fix recipes into `config/next/*-learned.yaml`.
+- `d70af23` Enforced strict GitHub truth for PR dependency status mapping (`MERGED` and `APPROVED` only from GH state/review decision).
+- `3782945` Added dependency-aware deployment flow UX (`WAITING_DEPENDENCIES`, clearer PR dependency tracking in dashboard).
+- `6f73ca5` Introduced PR lifecycle/task dependency enforcement and `MergerMCPServer` integration.
+- `9512eca`, `6e84e13`, `0394104` Expanded Docker-aware runtime demo controls, `gh` CLI PR workflow, and local-systems real PR execution path.
+
 ---
 
 ## 🏗️ SYSTEM ARCHITECTURE

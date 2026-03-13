@@ -1,5 +1,13 @@
 # FEATURES.md - Complete Feature List & Demo Data
 
+## Recent Platform Updates (March 2026)
+
+- **Strict PR truth mapping (GitHub source of truth)**: dependency status now maps from real GH PR fields (`state`, `reviewDecision`, `isDraft`) instead of optimistic local defaults.
+- **Dependency-aware deployment lifecycle**: CODE_FIX flows can remain in `WAITING_DEPENDENCIES` with explicit queued deployment semantics until dependent PRs are merged.
+- **Cleaner real-mode dependencies**: synthetic compatibility follow-up PRs are no longer shown in real PR mode; only traceable PR dependencies are tracked.
+- **Auto-learning catalogs persisted**: new unknown anomaly signatures and fallback fix recipes are written to `config/next/anomaly-learned.yaml` and `config/next/fix-recipes-learned.yaml`.
+- **Expanded MCP and PR flow surface**: task dependency graph, PR lifecycle gating, and merger coordination capabilities were added for multi-PR deployment safety.
+
 ## Dashboard Features
 
 ### 🎯 Interactive Filtering

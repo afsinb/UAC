@@ -1,5 +1,25 @@
 # DEVELOPER_GUIDE.md - Setup, Running & Troubleshooting
 
+## Recent Main Branch Snapshot (March 2026)
+
+Recent `main` updates include strict GitHub-backed PR status handling, dependency-aware deployment gating, Docker-aware local systems monitoring, and persisted learned anomaly/recipe catalogs.
+
+Useful verification commands:
+
+```bash
+cd /Users/afsinbuyuksarac/development/UAC
+git checkout main
+git --no-pager log --oneline --decorate -n 15
+```
+
+Run local monitor in real PR mode:
+
+```bash
+cd /Users/afsinbuyuksarac/development/UAC
+./run_demo.sh --local-systems --real-pr
+./run_demo.sh --verify
+```
+
 ## Quick Start
 
 ```bash
