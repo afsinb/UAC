@@ -16,7 +16,7 @@ A non-invasive autonomous monitoring layer that automatically detects, diagnoses
 ✅ **Self-Deploy** - Code patches via CI/CD  
 
 ### Recent Changes (March 2026)
-- `developV3` Added open-source ticket lifecycle integration (local tracker + optional GitLab Issues) with anomaly->fix->PR->deploy status/comments/labels traceability in dashboard.
+- `4047036` Improved real PR/ticket lifecycle: unknown-source anomalies can still create PRs using learned fallback artifacts, OpenProject work package IDs map correctly, and consolidated anomaly steps can have per-anomaly tickets.
 - `143ff2a` Persisted newly learned anomaly rules and fix recipes into `config/next/*-learned.yaml`.
 - `d70af23` Enforced strict GitHub truth for PR dependency status mapping (`MERGED` and `APPROVED` only from GH state/review decision).
 - `3782945` Added dependency-aware deployment flow UX (`WAITING_DEPENDENCIES`, clearer PR dependency tracking in dashboard).
@@ -80,10 +80,10 @@ MAIN ORCHESTRATOR
 ### Documentation (Keep Only These)
 ```
 README.md                           ← YOU ARE HERE
-AGENTS.md                           ← Development guidelines
-MODERN_ARCHITECTURE_GUIDE.md        ← Detailed architecture
-MIGRATION_GUIDE.md                  ← Deployment procedures
-TEST_SUITE.md                       ← Testing documentation
+ARCHITECTURE.md                     ← Detailed architecture
+FEATURES.md                         ← Platform capabilities & demo scenarios
+DEVELOPER_GUIDE.md                  ← Setup, run, and troubleshooting
+docs/agent_blueprint.md             ← Cross-project role blueprint
 ```
 
 ### Source Code (Production Ready)
@@ -120,32 +120,29 @@ src/test/java/
 ```bash
 # Read these in order:
 1. This file (README.md) - 5 min overview
-2. MODERN_ARCHITECTURE_GUIDE.md - 30 min detailed design
-3. AGENTS.md - 15 min development patterns
+2. ARCHITECTURE.md - detailed design and component map
+3. DEVELOPER_GUIDE.md - runbook and troubleshooting
 ```
 
 ### 2. Run Tests
 ```bash
-./run_tests_java.sh          # Quick validation
-mvn test                      # Full test suite
+mvn test
 ```
 
 ### 3. Start Development
 ```bash
-# Follow AGENTS.md for:
-- Adding new signal types
-- Implementing recovery actions
-- Creating development tasks
-- Writing tests
+# Use these docs while developing:
+- ARCHITECTURE.md for component boundaries
+- FEATURES.md for expected UX and lifecycle states
+- DEVELOPER_GUIDE.md for runtime scripts and integration setup
 ```
 
 ### 4. Deploy
 ```bash
-# Read MIGRATION_GUIDE.md for:
-- Staging deployment
-- Production deployment
-- Configuration
-- Monitoring
+# Local systems + real PR + ticketing flow:
+./run_demo.sh --local-systems --real-pr
+# Integration bootstrap (OpenProject token/env and project bootstrap):
+./setup_integrations.sh
 ```
 
 ---
@@ -267,7 +264,7 @@ Once configured, new anomaly flows will create OpenProject work packages and app
 2. Create use case in `application/`
 3. Implement in `infrastructure/`
 4. Write tests
-5. Update AGENTS.md if pattern changes
+5. Update `ARCHITECTURE.md` and `FEATURES.md` if lifecycle patterns change
 
 ### Extending Recovery
 1. Implement `HealingStrategy` interface
@@ -335,24 +332,24 @@ resolver.executeRecovery(action);  // Same result
 **First time?** Start here:
 ```
 1. Read: This README (bird's eye view)
-2. Read: MODERN_ARCHITECTURE_GUIDE.md (detailed design)
-3. Read: AGENTS.md (development patterns)
-4. Run: ./run_tests_java.sh (verify system)
-5. Code: Follow AGENTS.md patterns
+2. Read: ARCHITECTURE.md (detailed design)
+3. Read: DEVELOPER_GUIDE.md (runbook)
+4. Run: mvn test (verify system)
+5. Use: FEATURES.md to validate behavior/state names
 ```
 
 **Ready to deploy?**
 ```
-1. Read: MIGRATION_GUIDE.md
-2. Follow deployment steps
-3. Test in staging
-4. Deploy to production
+1. Run: ./setup_integrations.sh
+2. Run: ./run_demo.sh --local-systems --real-pr
+3. Verify: ./run_demo.sh --verify
+4. Monitor: http://localhost:8888
 ```
 
 **Running tests?**
 ```
-1. Read: TEST_SUITE.md
-2. Run: mvn test or ./run_tests_java.sh
+1. Read: DEVELOPER_GUIDE.md
+2. Run: mvn test
 3. Check: src/test/java/ for examples
 ```
 
@@ -362,10 +359,10 @@ resolver.executeRecovery(action);  // Same result
 
 | Document | Purpose | When to Read |
 |----------|---------|--------------|
-| **AGENTS.md** | Development patterns & guidelines | Every coding session |
-| **MODERN_ARCHITECTURE_GUIDE.md** | System design & architecture | Understanding the system |
-| **TEST_SUITE.md** | Testing documentation | Writing/running tests |
-| **MIGRATION_GUIDE.md** | Deployment procedures | Before production |
+| **ARCHITECTURE.md** | System design & component architecture | Understanding the system |
+| **FEATURES.md** | Lifecycle states, dashboard behaviors, demo data | Validating expected behavior |
+| **DEVELOPER_GUIDE.md** | Setup, scripts, troubleshooting | Running and operating locally |
+| **docs/agent_blueprint.md** | Observer/Resolver/Evolver role blueprint | Cross-project mental model |
 
 ---
 
@@ -385,18 +382,18 @@ resolver.executeRecovery(action);  // Same result
 
 ## 🎯 NEXT STEPS
 
-1. **Understand:** Read MODERN_ARCHITECTURE_GUIDE.md
-2. **Learn Patterns:** Study AGENTS.md thoroughly
-3. **Validate:** Run ./run_tests_java.sh
-4. **Develop:** Follow guidelines in AGENTS.md
-5. **Deploy:** Use MIGRATION_GUIDE.md
+1. **Understand:** Read ARCHITECTURE.md
+2. **Map Features:** Read FEATURES.md
+3. **Validate:** Run mvn test
+4. **Operate:** Follow DEVELOPER_GUIDE.md
+5. **Deploy Demo:** Use ./run_demo.sh --local-systems --real-pr
 
 ---
 
 **Your AI-Supported Self-Healing Monitoring System is production-ready!** 🚀
 
-For detailed development patterns, see **AGENTS.md**  
-For system architecture, see **MODERN_ARCHITECTURE_GUIDE.md**  
-For testing, see **TEST_SUITE.md**  
-For deployment, see **MIGRATION_GUIDE.md**
+For system architecture, see **ARCHITECTURE.md**  
+For platform capabilities and lifecycle states, see **FEATURES.md**  
+For setup/run/troubleshooting, see **DEVELOPER_GUIDE.md**  
+For cross-project role blueprint, see **docs/agent_blueprint.md**
 

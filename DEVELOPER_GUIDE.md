@@ -2,14 +2,14 @@
 
 ## Recent Main Branch Snapshot (March 2026)
 
-Recent `main` updates include strict GitHub-backed PR status handling, dependency-aware deployment gating, Docker-aware local systems monitoring, and persisted learned anomaly/recipe catalogs.
+Recent `developV3` updates include improved real PR behavior for unknown-source anomalies, per-anomaly ticketing for consolidated code-fix flows, OpenProject-native ticket numbering (`#<id>`), and clearer ticket diagnostics on execution steps.
 
 Useful verification commands:
 
 ```bash
 cd /Users/afsinbuyuksarac/development/UAC
-git checkout main
-git --no-pager log --oneline --decorate -n 15
+git checkout developV3
+git --no-pager log --oneline --decorate -n 20
 ```
 
 Run local monitor in real PR mode:
@@ -18,6 +18,14 @@ Run local monitor in real PR mode:
 cd /Users/afsinbuyuksarac/development/UAC
 ./run_demo.sh --local-systems --real-pr
 ./run_demo.sh --verify
+```
+
+Bootstrap local integrations (OpenProject token/env + project setup):
+
+```bash
+cd /Users/afsinbuyuksarac/development/UAC
+./setup_integrations.sh
+./docker/openproject_bootstrap.sh
 ```
 
 ## Quick Start
