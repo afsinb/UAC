@@ -16,6 +16,7 @@ A non-invasive autonomous monitoring layer that automatically detects, diagnoses
 ✅ **Self-Deploy** - Code patches via CI/CD  
 
 ### Recent Changes (March 2026)
+- `developV3` Added open-source ticket lifecycle integration (local tracker + optional GitLab Issues) with anomaly->fix->PR->deploy status/comments/labels traceability in dashboard.
 - `143ff2a` Persisted newly learned anomaly rules and fix recipes into `config/next/*-learned.yaml`.
 - `d70af23` Enforced strict GitHub truth for PR dependency status mapping (`MERGED` and `APPROVED` only from GH state/review decision).
 - `3782945` Added dependency-aware deployment flow UX (`WAITING_DEPENDENCIES`, clearer PR dependency tracking in dashboard).
@@ -189,6 +190,73 @@ Runtime behavior:
 3. A new anomaly flow is created for the new type
 4. `AIDecisionEngine` chooses a recipe from external catalogs
 5. If no recipe exists, a learned fallback recipe is generated and persisted
+
+### Open-Source Ticketing (JIRA-like)
+UAC now creates and updates a ticket for each healing flow.
+
+Supported providers:
+- `local` (default): lightweight built-in ticket board (no external dependency)
+- `gitlab`: GitLab CE/EE Issues API
+- `openproject`: OpenProject work packages via API v3
+
+Lifecycle mapping:
+- flow created -> ticket created with labels (anomaly/severity/system/pr/mitigation/logs/solution)
+- waiting dependencies -> ticket status `WAITING_DEPENDENCIES` with PR dependency comment
+- deployment complete -> ticket status `COMPLETED` with final deployment comment
+
+Per-system config (`config/systems/*.yaml`):
+
+```yaml
+ticketing:
+  enabled: true
+  provider: openproject
+  base_url: http://localhost:8084
+  project_id: uac
+  type_id: 1
+  token_env: OPENPROJECT_API_TOKEN
+```
+
+### OpenProject Docker Setup
+Start OpenProject and its database:
+
+```bash
+docker compose -f docker/docker-compose.yml up -d openproject-db openproject
+```
+
+Wait until OpenProject is up:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8084
+```
+
+Expected response after startup is usually `302` (redirect to sign-in).
+
+Then:
+1. Open `http://localhost:8084` and complete first-login admin setup.
+2. Create an API token in OpenProject account settings.
+3. Recommended: run the initializer script to save tokens/config in one place:
+
+```bash
+./setup_integrations.sh
+```
+
+The initializer writes `docker/.uac.env`, can create/update a local OpenProject dev user (default `UAC` / `uac123`), and is automatically loaded by `run_demo.sh --local-systems` and `./docker/openproject_bootstrap.sh`.
+
+4. Or export the token manually for UAC runtime:
+
+```bash
+export OPENPROJECT_API_TOKEN="<your-token>"
+```
+
+You can also create `docker/.uac.env` from `docker/.uac.env.example` manually.
+
+5. Bootstrap/create the `uac` project used by system YAML configs:
+
+```bash
+./docker/openproject_bootstrap.sh
+```
+
+Once configured, new anomaly flows will create OpenProject work packages and append status updates while dependencies/deployments evolve.
 
 ---
 

@@ -69,3 +69,43 @@ services:
       timeout: 10s
       start_period: 40s
       retries: 3
+
+  # ── OpenProject Ticketing (port 8084) ─────────────────────────────────────
+  openproject-db:
+    image: postgres:14
+    container_name: uac-openproject-db
+    environment:
+      - POSTGRES_DB=openproject
+      - POSTGRES_USER=openproject
+      - POSTGRES_PASSWORD=openproject
+    volumes:
+      - openproject-pgdata:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U openproject -d openproject"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+
+  openproject:
+    image: openproject/openproject:15
+    container_name: uac-openproject
+    depends_on:
+      openproject-db:
+        condition: service_healthy
+    ports:
+      - "8084:80"
+    environment:
+      - OPENPROJECT_SECRET_KEY_BASE=${OPENPROJECT_SECRET_KEY_BASE:-uac-openproject-secret-change-me}
+      - OPENPROJECT_HOST__NAME=${OPENPROJECT_HOST_NAME:-localhost:8084}
+      - OPENPROJECT_HTTPS=${OPENPROJECT_HTTPS:-false}
+      - OPENPROJECT_DEFAULT__LANGUAGE=en
+      - DATABASE_URL=postgres://openproject:openproject@openproject-db:5432/openproject
+    volumes:
+      - openproject-assets:/var/openproject/assets
+    restart: unless-stopped
+
+volumes:
+  openproject-pgdata:
+  openproject-assets:
+

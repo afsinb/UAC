@@ -121,6 +121,7 @@ public class SelfHealingDashboard {
         public String workflowStatus; // COMPLETED, WAITING_DEPENDENCIES, FAILED, RUNNING
         public List<Map<String, Object>> deploymentDependencies;
         public Map<String, Object> journey;
+        public Map<String, Object> ticket;
         
         public HealingFlow(String systemId, String type) {
             this.id = UUID.randomUUID().toString();
@@ -132,6 +133,7 @@ public class SelfHealingDashboard {
             this.workflowStatus = "RUNNING";
             this.deploymentDependencies = new ArrayList<>();
             this.journey = new HashMap<>();
+            this.ticket = new HashMap<>();
         }
     }
     

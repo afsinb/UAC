@@ -112,11 +112,39 @@ public class SimpleDashboard {
                         if (flow.journey != null && flow.journey.containsKey("stages")) {
                             m.put("journey", flow.journey);
                         }
+                        m.put("ticket", flow.ticket != null ? flow.ticket : Map.of());
                         m.put("deploymentDependencies", flow.deploymentDependencies != null ? flow.deploymentDependencies : List.of());
                         flows.add(m);
                     }
                 }
                 sendJson(exchange, flows);
+            });
+
+            server.createContext("/api/tickets", exchange -> {
+                List<Map<String, Object>> tickets = new ArrayList<>();
+                SelfHealingDashboard.SystemMonitor sys = getSelectedSystemMonitor();
+                if (sys == null) {
+                    sendJson(exchange, tickets);
+                    return;
+                }
+
+                for (var flow : dashboard.allFlows) {
+                    if (!sys.id.equals(flow.systemId)) {
+                        continue;
+                    }
+                    if (flow.ticket == null || flow.ticket.isEmpty()) {
+                        continue;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("flowId", flow.id);
+                    row.put("flowStatus", flow.workflowStatus != null ? flow.workflowStatus : String.valueOf(flow.status));
+                    row.put("anomaly", flow.anomaly != null ? flow.anomaly.anomalyType : "UNKNOWN");
+                    row.put("severity", flow.anomaly != null ? flow.anomaly.severity : "UNKNOWN");
+                    row.put("createdAt", flow.createdAt);
+                    row.put("ticket", new LinkedHashMap<>(flow.ticket));
+                    tickets.add(row);
+                }
+                sendJson(exchange, tickets);
             });
             
             server.createContext("/api/flows/", exchange -> {
@@ -283,6 +311,7 @@ public class SimpleDashboard {
             steps.add(s);
         }
         m.put("steps", steps);
+        m.put("ticket", flow.ticket != null ? new HashMap<>(flow.ticket) : new HashMap<>());
         m.put("deploymentDependencies", flow.deploymentDependencies != null ? new ArrayList<>(flow.deploymentDependencies) : new ArrayList<>());
         if (flow.journey != null && !flow.journey.isEmpty()) {
             m.put("journey", flow.journey);
@@ -415,6 +444,7 @@ public class SimpleDashboard {
 <div class="nav-item active" data-view="dashboard" onclick="showDashboard()">📊 Dashboard</div>
 <div class="nav-item" data-view="flows" onclick="showFlows()">🔧 Fixes</div>
 <div class="nav-item" data-view="alarms" onclick="showAlarms()">🚨 Alarms</div>
+<div class="nav-item" data-view="tickets" onclick="showTickets()">🎫 Tickets</div>
 </div>
 <div class="main">
 <div class="header">
@@ -427,6 +457,7 @@ public class SimpleDashboard {
 </div>
 <div id="flows-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">All Fixes</h3><div class="list" id="all-flows"></div></div></div>
 <div id="alarms-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">All Alarms</h3><div class="list" id="all-alarms"></div></div></div>
+<div id="tickets-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">Open Tickets & Ongoing Anomalies</h3><div class="list" id="all-tickets"></div></div></div>
 </div>
 </div>
 <div id="flowModal" class="modal"><div class="modal-content"><span class="modal-close" onclick="document.getElementById('flowModal').classList.remove('active')">&times;</span><div id="flow-details"></div></div></div>
@@ -435,6 +466,7 @@ public class SimpleDashboard {
 let selectedSystem = null;
 let flows = [];
 let alarms = [];
+let tickets = [];
 let flowFilter = 'ALL'; // Filter state for flows
 let alarmFilter = 'ALL'; // Filter state for alarms
 
@@ -477,6 +509,7 @@ async function selectSystem(id, name, element = null) {
     // Reload all data for this system
     flows = await fetch('/api/flows').then(r => r.json()).catch(e => { console.error('Flows error:', e); return []; });
     alarms = await fetch('/api/alarms').then(r => r.json()).catch(e => { console.error('Alarms error:', e); return []; });
+    tickets = await fetch('/api/tickets').then(r => r.json()).catch(e => { console.error('Tickets error:', e); return []; });
     
     console.log('Loaded flows:', flows.length, 'alarms:', alarms.length);
     await updateDashboard();
@@ -512,6 +545,7 @@ async function updateDashboard() {
         // Update views
         updateFlowsView();
         updateAlarmsView();
+        updateTicketsView();
         
     } catch(e) { console.error('Dashboard update error:', e); }
 }
@@ -535,6 +569,7 @@ function updateFlowsView() {
         <div class="list-item" onclick="showFlow('${f.id}')">
             <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
             <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${(f.ticket && f.ticket.key) ? `<div class="list-meta" style="margin-top:4px">Ticket: ${f.ticket.key} (${f.ticket.status || 'OPEN'})</div>` : ''}
             ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes matching filter</p>';
@@ -543,6 +578,7 @@ function updateFlowsView() {
         <div class="list-item" onclick="showFlow('${f.id}')">
             <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
             <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${(f.ticket && f.ticket.key) ? `<div class="list-meta" style="margin-top:4px">Ticket: ${f.ticket.key} (${f.ticket.status || 'OPEN'})</div>` : ''}
             ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes</p>';
@@ -566,6 +602,28 @@ function updateAlarmsView() {
     `).join('') || '<p style="color:#7d8590">No alarms</p>';
 
     document.getElementById('all-alarms').innerHTML = html;
+}
+
+function updateTicketsView() {
+    const list = (tickets || []).slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const html = list.map(t => {
+        const tk = t.ticket || {};
+        const key = tk.key || tk.id || 'N/A';
+        const provider = tk.provider || 'local';
+        const status = tk.status || 'OPEN';
+        const flowStatus = t.flowStatus || 'RUNNING';
+        const link = (tk.url || '').startsWith('http')
+            ? `<a href="${tk.url}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff">open</a>`
+            : '<span style="color:#7d8590">local</span>';
+        const waiting = flowStatus === 'WAITING_DEPENDENCIES' ? ' ⏳ waiting deps' : '';
+        return `<div class="list-item" onclick="showFlow('${t.flowId}')">
+            <div class="list-title">${key} <span class="badge" style="background:#58a6ff22;color:#58a6ff">${provider}</span></div>
+            <div class="list-meta">${t.anomaly || 'UNKNOWN'} (${t.severity || 'N/A'}) | flow: ${flowStatus}${waiting}</div>
+            <div class="list-meta">ticket status: ${status} | link: ${link}</div>
+        </div>`;
+    }).join('') || '<p style="color:#7d8590">No tickets for selected system yet</p>';
+
+    document.getElementById('all-tickets').innerHTML = html;
 }
 
 function updateCardHighlight() {
@@ -638,6 +696,26 @@ async function showFlow(flowId) {
             ${flow.anomaly.stackTrace ? `<pre style="padding:8px;background:#161b22;border-radius:4px;font-size:10px;white-space:pre-wrap;max-height:110px;overflow-y:auto;margin:0">${flow.anomaly.stackTrace}</pre>` : ''}
         </div>` : '';
 
+        const ticket = flow.ticket && Object.keys(flow.ticket).length ? flow.ticket : null;
+        const ticketComments = ticket && Array.isArray(ticket.comments)
+            ? ticket.comments.slice(-5).map(c => `<div style="font-size:11px;color:#94a3b8;margin-top:4px">- ${c}</div>`).join('')
+            : '';
+        const ticketLabels = ticket && Array.isArray(ticket.labels)
+            ? ticket.labels.map(l => `<span class="badge" style="background:#0969da33;color:#58a6ff">${l}</span>`).join(' ')
+            : '';
+        const ticketHtml = ticket ? `
+        <div style="background:#0f1419;border-radius:6px;padding:12px;margin-bottom:14px">
+            <div style="font-size:10px;color:#7d8590;margin-bottom:8px;font-weight:600;letter-spacing:.5px">TICKET TRACKING</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:8px">
+                <div><span style="color:#7d8590">Provider:</span> <strong>${ticket.provider || 'local'}</strong></div>
+                <div><span style="color:#7d8590">Status:</span> <strong>${ticket.status || 'OPEN'}</strong></div>
+                <div><span style="color:#7d8590">Key:</span> <strong>${ticket.key || ticket.id || 'N/A'}</strong></div>
+                <div><span style="color:#7d8590">Link:</span> ${(ticket.url || '').startsWith('http') ? `<a href="${ticket.url}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff">open</a>` : '<span style="color:#94a3b8">local</span>'}</div>
+            </div>
+            ${ticketLabels ? `<div style="margin-bottom:6px">${ticketLabels}</div>` : ''}
+            ${ticketComments}
+        </div>` : '';
+
         const journeyStages = flow.journey && Array.isArray(flow.journey.stages) ? flow.journey.stages : [];
         const journeyHtml = journeyStages.length ? `<div style="margin-bottom:14px"><strong>Flow Journey (Anomaly -> Fix -> Deployment)</strong><div class="journey-row">${journeyStages.map(s => {
             const st = (s.status || 'PENDING').toUpperCase();
@@ -674,6 +752,7 @@ async function showFlow(flowId) {
                 </div>
             </div>
             ${anomalyHtml}
+            ${ticketHtml}
             ${journeyHtml}
             <div><strong>Execution Steps (${(flow.steps||[]).length})</strong>${steps}</div>
         `;
@@ -726,6 +805,7 @@ function showDashboard() {
     document.getElementById('dashboard').style.display='block';
     document.getElementById('flows-view').style.display='none';
     document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('dashboard');
 }
 
@@ -733,6 +813,7 @@ function showFlows() {
     document.getElementById('dashboard').style.display='none';
     document.getElementById('flows-view').style.display='block';
     document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('flows');
 }
 
@@ -740,7 +821,16 @@ function showAlarms() {
     document.getElementById('dashboard').style.display='none';
     document.getElementById('flows-view').style.display='none';
     document.getElementById('alarms-view').style.display='block';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('alarms');
+}
+
+function showTickets() {
+    document.getElementById('dashboard').style.display='none';
+    document.getElementById('flows-view').style.display='none';
+    document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='block';
+    setActiveNav('tickets');
 }
 
 loadData();

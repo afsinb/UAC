@@ -51,6 +51,7 @@ public class LocalSystemsMonitorDemo {
     private final AIDecisionEngine aiDecisionEngine;
     private final AnomalyRuleRegistry anomalyRuleRegistry;
     private final PRDeploymentGate deploymentGate;
+    private final OpenSourceTicketingService ticketingService;
 
     public LocalSystemsMonitorDemo(int dashboardPort, int dataPort) throws IOException {
         this.dataModel = new SelfHealingDashboard(dataPort);
@@ -60,6 +61,7 @@ public class LocalSystemsMonitorDemo {
         this.realPrMode = "true".equalsIgnoreCase(System.getenv().getOrDefault("UAC_REAL_PR", "false"));
         this.aiDecisionEngine = new AIDecisionEngine();
         this.deploymentGate = PRDeploymentGate.getInstance();
+        this.ticketingService = new OpenSourceTicketingService();
         Path projectRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
         this.anomalyRuleRegistry = new AnomalyRuleRegistry(
                 projectRoot.resolve("config").resolve("next").resolve("anomaly-rules.yaml"),
@@ -329,7 +331,21 @@ public class LocalSystemsMonitorDemo {
         // and merge all waiting PR dependencies into that one deployment step.
         SelfHealingDashboard.HealingFlow consolidated = findConsolidationCandidate(systemId);
         if (consolidated != null) {
-            mergeIntoConsolidatedDeployment(consolidated, anomalyType, message, sourceFile, line, resolvedPrId, deps);
+            SelfHealingDashboard.FlowStep consolidatedStep = mergeIntoConsolidatedDeployment(
+                    consolidated, anomalyType, message, sourceFile, line, resolvedPrId, deps);
+            syncTicketForAnomalyStep(
+                    cfg,
+                    consolidated,
+                    consolidatedStep,
+                    anomalyType,
+                    severity,
+                    message,
+                    sourceFile,
+                    line,
+                    resolvedPrId,
+                    consolidated.workflowStatus,
+                    consolidated.deploymentDependencies
+            );
             dataModel.recordAnomalyDetected(systemId, anomalyType, severity);
             addAlarm(cfg, "RECOVERY_STARTED", "HIGH", "Code-fix consolidated into pending deployment: " + message, consolidated.id);
             return;
@@ -385,6 +401,12 @@ public class LocalSystemsMonitorDemo {
         );
 
         flow.status = SelfHealingDashboard.FlowStatus.VALIDATION_COMPLETE;
+        syncTicketForFlow(cfg, flow, anomalyType, severity, message, sourceFile, line, resolvedPrId,
+                flow.workflowStatus,
+                waitingDependencies
+                        ? "Deployment queued: waiting for PR dependencies"
+                        : "Fix deployed after PR checks",
+                deps);
         dataModel.addHealingFlow(flow);
         dataModel.recordAnomalyDetected(systemId, anomalyType, severity);
         if ("WAITING_DEPENDENCIES".equals(flow.workflowStatus)) {
@@ -411,7 +433,7 @@ public class LocalSystemsMonitorDemo {
         return null;
     }
 
-    private void mergeIntoConsolidatedDeployment(
+    private SelfHealingDashboard.FlowStep mergeIntoConsolidatedDeployment(
             SelfHealingDashboard.HealingFlow target,
             String anomalyType,
             String message,
@@ -451,6 +473,88 @@ public class LocalSystemsMonitorDemo {
                 "Deployment waiting for consolidated PR dependencies",
                 target.deploymentDependencies
         );
+        return consolidationStep;
+    }
+
+    private void syncTicketForAnomalyStep(
+            SystemConfig cfg,
+            SelfHealingDashboard.HealingFlow flow,
+            SelfHealingDashboard.FlowStep executionStep,
+            String anomalyType,
+            String severity,
+            String message,
+            String sourceFile,
+            int line,
+            String prId,
+            String workflowStatus,
+            List<Map<String, Object>> dependencies
+    ) {
+        if (executionStep == null) {
+            return;
+        }
+
+        OpenSourceTicketingService.TicketConfig ticketConfig = buildTicketConfig(cfg);
+        if (!ticketConfig.enabled) {
+            executionStep.details.put("ticketStatus", "SKIPPED");
+            executionStep.details.put("ticketReason", "ticketing-disabled");
+            return;
+        }
+
+        List<String> labels = buildTicketLabels(cfg, anomalyType, severity, prId, dependencies, workflowStatus);
+
+        OpenSourceTicketingService.TicketPayload payload = new OpenSourceTicketingService.TicketPayload();
+        payload.title = "[" + cfg.name + "] " + anomalyType + " self-healing";
+        payload.description = buildTicketDescription(cfg, anomalyType, severity, message, sourceFile, line, prId, dependencies);
+        payload.labels = labels;
+
+        Map<String, Object> ticket = ticketingService.openTicket(ticketConfig, payload);
+        if (ticket == null || ticket.isEmpty()) {
+            executionStep.details.put("ticketStatus", "ERROR");
+            executionStep.details.put("ticketReason", "ticket-create-failed");
+            return;
+        }
+
+        String deploymentNote = "Anomaly consolidated into deployment instance " + flow.id;
+        String dependencySnapshot = formatDependencySnapshot(dependencies);
+        String comment = dependencySnapshot.isBlank() ? deploymentNote : deploymentNote + " | " + dependencySnapshot;
+        ticket = ticketingService.updateTicket(ticketConfig, ticket, workflowStatus, comment, labels);
+        if (ticket == null || ticket.isEmpty()) {
+            executionStep.details.put("ticketStatus", "ERROR");
+            executionStep.details.put("ticketReason", "ticket-update-failed");
+            return;
+        }
+
+        executionStep.details.put("ticket", String.valueOf(ticket.getOrDefault("key", ticket.get("id"))));
+        executionStep.details.put("ticketStatus", String.valueOf(ticket.getOrDefault("status", workflowStatus)));
+        Object ticketUrl = ticket.get("url");
+        if (ticketUrl != null) {
+            String urlStr = String.valueOf(ticketUrl);
+            if (urlStr.startsWith("http")) {
+                executionStep.details.put("ticketUrl", urlStr);
+            }
+        }
+
+        if (flow.journey == null) {
+            flow.journey = new LinkedHashMap<>();
+        }
+        Object existing = flow.journey.get("anomalyTickets");
+        List<Map<String, Object>> anomalyTickets;
+        if (existing instanceof List<?> list) {
+            anomalyTickets = new ArrayList<>();
+            for (Object o : list) {
+                if (o instanceof Map<?, ?> m) {
+                    Map<String, Object> copy = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> e : m.entrySet()) {
+                        copy.put(String.valueOf(e.getKey()), e.getValue());
+                    }
+                    anomalyTickets.add(copy);
+                }
+            }
+        } else {
+            anomalyTickets = new ArrayList<>();
+        }
+        anomalyTickets.add(new LinkedHashMap<>(ticket));
+        flow.journey.put("anomalyTickets", anomalyTickets);
     }
 
     private void mergeDependencies(List<Map<String, Object>> existing, List<Map<String, Object>> incoming) {
@@ -504,6 +608,20 @@ public class LocalSystemsMonitorDemo {
                             "Fixes prepared and tracked",
                             waiting == 0 ? "All dependent PRs merged; deployment unblocked"
                                     : "Waiting on dependent PRs",
+                            flow.deploymentDependencies
+                    );
+
+                    syncTicketForFlow(
+                            cfg,
+                            flow,
+                            flow.anomaly != null ? flow.anomaly.anomalyType : "UNKNOWN_ANOMALY",
+                            flow.anomaly != null ? defaultIfBlank(flow.anomaly.severity, "MEDIUM") : "MEDIUM",
+                            flow.anomaly != null ? defaultIfBlank(flow.anomaly.message, "Dependency status refreshed") : "Dependency status refreshed",
+                            flow.anomaly != null ? defaultIfBlank(flow.anomaly.sourceFile, "UnknownSource.java") : "UnknownSource.java",
+                            flow.anomaly != null ? flow.anomaly.lineNumber : 0,
+                            extractExecutionPrId(flow),
+                            flow.workflowStatus,
+                            waiting > 0 ? "Deployment still blocked by dependencies" : "Dependencies resolved; deployment unlocked",
                             flow.deploymentDependencies
                     );
                 }
@@ -691,6 +809,8 @@ public class LocalSystemsMonitorDemo {
         );
 
         flow.status = SelfHealingDashboard.FlowStatus.VALIDATION_COMPLETE;
+        syncTicketForFlow(cfg, flow, anomalyType, severity, message, "OperationalAction", 0, null,
+                "COMPLETED", "Operational mitigation executed and validated", List.of());
         dataModel.addHealingFlow(flow);
         dataModel.recordAnomalyDetected(systemId, anomalyType, severity);
         dataModel.recordHealingSuccess(systemId);
@@ -737,6 +857,20 @@ public class LocalSystemsMonitorDemo {
             validationStep.action = "Post-fix smoke checks pass";
             validationStep.details.put("status", "success");
         }
+
+        syncTicketForFlow(
+                cfg,
+                flow,
+                flow.anomaly != null ? flow.anomaly.anomalyType : "UNKNOWN_ANOMALY",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.severity, "MEDIUM") : "MEDIUM",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.message, "Deployment finalized") : "Deployment finalized",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.sourceFile, "UnknownSource.java") : "UnknownSource.java",
+                flow.anomaly != null ? flow.anomaly.lineNumber : 0,
+                extractExecutionPrId(flow),
+                "COMPLETED",
+                "All dependent PRs merged, deployment finished",
+                flow.deploymentDependencies != null ? flow.deploymentDependencies : List.of()
+        );
     }
 
     private SelfHealingDashboard.FlowStep findStep(SelfHealingDashboard.HealingFlow flow, String phase) {
@@ -789,6 +923,147 @@ public class LocalSystemsMonitorDemo {
 
     private String defaultIfBlank(String v, String d) {
         return (v == null || v.isBlank()) ? d : v;
+    }
+
+    private void syncTicketForFlow(
+            SystemConfig cfg,
+            SelfHealingDashboard.HealingFlow flow,
+            String anomalyType,
+            String severity,
+            String message,
+            String sourceFile,
+            int line,
+            String prId,
+            String workflowStatus,
+            String comment,
+            List<Map<String, Object>> dependencies
+    ) {
+        if (flow == null) {
+            return;
+        }
+
+        OpenSourceTicketingService.TicketConfig ticketConfig = buildTicketConfig(cfg);
+        if (!ticketConfig.enabled) {
+            return;
+        }
+
+        List<String> labels = buildTicketLabels(cfg, anomalyType, severity, prId, dependencies, workflowStatus);
+
+        if (flow.ticket == null || flow.ticket.isEmpty()) {
+            OpenSourceTicketingService.TicketPayload payload = new OpenSourceTicketingService.TicketPayload();
+            payload.title = "[" + cfg.name + "] " + anomalyType + " self-healing";
+            payload.description = buildTicketDescription(cfg, anomalyType, severity, message, sourceFile, line, prId, dependencies);
+            payload.labels = labels;
+            flow.ticket = ticketingService.openTicket(ticketConfig, payload);
+        }
+
+        String dependencySnapshot = formatDependencySnapshot(dependencies);
+        String lifecycleComment = comment + (dependencySnapshot.isBlank() ? "" : " | " + dependencySnapshot);
+        flow.ticket = ticketingService.updateTicket(ticketConfig, flow.ticket, workflowStatus, lifecycleComment, labels);
+
+        SelfHealingDashboard.FlowStep executionStep = findStep(flow, "EXECUTION");
+        if (executionStep != null && flow.ticket != null) {
+            executionStep.details.put("ticket", String.valueOf(flow.ticket.getOrDefault("key", flow.ticket.get("id"))));
+            executionStep.details.put("ticketStatus", String.valueOf(flow.ticket.getOrDefault("status", workflowStatus)));
+            Object ticketUrl = flow.ticket.get("url");
+            if (ticketUrl != null) {
+                String urlStr = String.valueOf(ticketUrl);
+                if (urlStr.startsWith("http")) {
+                    executionStep.details.put("ticketUrl", urlStr);
+                }
+            }
+        }
+
+        if (flow.journey == null) {
+            flow.journey = new LinkedHashMap<>();
+        }
+        flow.journey.put("ticket", flow.ticket);
+
+    }
+
+    private OpenSourceTicketingService.TicketConfig buildTicketConfig(SystemConfig cfg) {
+        OpenSourceTicketingService.TicketConfig ticketConfig = new OpenSourceTicketingService.TicketConfig();
+        ticketConfig.enabled = cfg.ticketingEnabled;
+        ticketConfig.provider = defaultIfBlank(cfg.ticketProvider, "local");
+        ticketConfig.baseUrl = cfg.ticketBaseUrl;
+        ticketConfig.projectId = cfg.ticketProjectId;
+        String defaultTokenEnv = "openproject".equalsIgnoreCase(ticketConfig.provider)
+                ? "OPENPROJECT_API_TOKEN"
+                : "GITLAB_TOKEN";
+        ticketConfig.token = System.getenv(defaultIfBlank(cfg.ticketTokenEnv, defaultTokenEnv));
+        ticketConfig.openProjectTypeId = cfg.ticketTypeId;
+        return ticketConfig;
+    }
+
+    private List<String> buildTicketLabels(
+            SystemConfig cfg,
+            String anomalyType,
+            String severity,
+            String prId,
+            List<Map<String, Object>> dependencies,
+            String workflowStatus
+    ) {
+        LinkedHashSet<String> labels = new LinkedHashSet<>();
+        labels.add("system::" + sanitizeLabel(cfg.name));
+        labels.add("anomaly::" + sanitizeLabel(anomalyType));
+        labels.add("severity::" + sanitizeLabel(severity));
+        labels.add("workflow::" + sanitizeLabel(workflowStatus));
+        labels.add("tag::mitigation");
+        labels.add("tag::logs");
+        labels.add("tag::solution");
+
+        if (prId != null && !prId.isBlank()) {
+            labels.add("pr::" + sanitizeLabel(extractPrId(prId, prId)));
+        }
+
+        if (dependencies != null && !dependencies.isEmpty()) {
+            labels.add("dependencies::" + waitingDependencyCount(dependencies));
+        }
+
+        return new ArrayList<>(labels);
+    }
+
+    private String sanitizeLabel(String value) {
+        if (value == null || value.isBlank()) {
+            return "unknown";
+        }
+        return value.toLowerCase(Locale.ROOT).replace(' ', '-').replaceAll("[^a-z0-9:_-]", "-");
+    }
+
+    private String buildTicketDescription(
+            SystemConfig cfg,
+            String anomalyType,
+            String severity,
+            String message,
+            String sourceFile,
+            int line,
+            String prId,
+            List<Map<String, Object>> dependencies
+    ) {
+        String depSummary = formatDependencySnapshot(dependencies);
+        String prSummary = (prId == null || prId.isBlank()) ? "N/A" : prId;
+        return "System: " + cfg.name + "\n"
+                + "Anomaly: " + anomalyType + "\n"
+                + "Severity: " + severity + "\n"
+                + "Message: " + message + "\n"
+                + "Source: " + sourceFile + ":" + line + "\n"
+                + "PR: " + prSummary + "\n"
+                + "Mitigation: autonomous fix/validation pipeline\n"
+                + "Dependencies: " + (depSummary.isBlank() ? "none" : depSummary) + "\n"
+                + "Logs: captured by UAC monitor";
+    }
+
+    private String formatDependencySnapshot(List<Map<String, Object>> dependencies) {
+        if (dependencies == null || dependencies.isEmpty()) {
+            return "";
+        }
+        List<String> parts = new ArrayList<>();
+        for (Map<String, Object> dep : dependencies) {
+            String id = String.valueOf(dep.getOrDefault("id", "PR"));
+            String status = String.valueOf(dep.getOrDefault("status", "OPEN"));
+            parts.add(id + "=" + status);
+        }
+        return String.join(", ", parts);
     }
 
     private Map<String, Object> buildJourney(String flowStatus,
@@ -864,9 +1139,6 @@ public class LocalSystemsMonitorDemo {
             }
 
             Path targetFile = findFileByName(repoPath, sourceFile);
-            if (targetFile == null) {
-                return fallbackPrId + " (simulated:file-not-found)";
-            }
 
             // ── Git operations FIRST so the patch lands on a clean fix branch ──
             String branch = "uac/fix-" + shortId();
@@ -879,11 +1151,13 @@ public class LocalSystemsMonitorDemo {
                 return fallbackPrId + " (simulated:create-branch-failed)";
             }
 
-            // ── Now apply the patch on the fix branch ──────────────────────────
-            boolean patched = applyPatchForAnomaly(targetFile, anomalyType);
+            // ── Apply targeted patch when source file is known; otherwise fallback artifact ──
+            boolean patched = false;
+            if (targetFile != null) {
+                patched = applyPatchForAnomaly(targetFile, anomalyType);
+            }
             if (!patched) {
-                // Unknown or unmatched anomaly: persist a learned recipe artifact
-                // so the branch still carries a meaningful change for review.
+                // Unknown anomaly or unknown source file still produces a reviewable PR payload.
                 patched = createFallbackRecipeArtifact(repoPath, anomalyType, sourceFile, title);
             }
             if (!patched) {
@@ -903,13 +1177,11 @@ public class LocalSystemsMonitorDemo {
             String prTitle   = "UAC Fix: " + anomalyType;
             String prBody    = "Automated fix by UAC monitor for system: " + cfg.name;
 
-            // ── 1. Try gh CLI first (uses gh auth / SSH – no token needed) ──
             String cliUrl = createPullRequestViaCLI(repoPath, prTitle, prBody, branch, baseBranch);
             if (cliUrl != null) {
                 return cliUrl;
             }
 
-            // ── 2. Fall back to REST API when a token is available ───────────
             String[] ownerRepo = parseOwnerRepo(cfg.gitRepository);
             if (ownerRepo != null) {
                 String tokenEnv = (cfg.tokenEnv != null && !cfg.tokenEnv.isBlank()) ? cfg.tokenEnv : "GITHUB_TOKEN";
@@ -1339,6 +1611,22 @@ public class LocalSystemsMonitorDemo {
                 cfg.gitBranch = value;
             } else if ("git".equals(currentSection) && "token_env".equals(key)) {
                 cfg.tokenEnv = value;
+            } else if ("ticketing".equals(currentSection) && "enabled".equals(key)) {
+                cfg.ticketingEnabled = "true".equalsIgnoreCase(value);
+            } else if ("ticketing".equals(currentSection) && "provider".equals(key)) {
+                cfg.ticketProvider = value;
+            } else if ("ticketing".equals(currentSection) && "base_url".equals(key)) {
+                cfg.ticketBaseUrl = value;
+            } else if ("ticketing".equals(currentSection) && "project_id".equals(key)) {
+                cfg.ticketProjectId = value;
+            } else if ("ticketing".equals(currentSection) && "type_id".equals(key)) {
+                try {
+                    cfg.ticketTypeId = Integer.parseInt(value);
+                } catch (NumberFormatException ignored) {
+                    cfg.ticketTypeId = 1;
+                }
+            } else if ("ticketing".equals(currentSection) && "token_env".equals(key)) {
+                cfg.ticketTokenEnv = value;
             }
         }
 
@@ -1359,6 +1647,12 @@ public class LocalSystemsMonitorDemo {
         String gitRepository;
         String gitBranch;
         String tokenEnv = "GITHUB_TOKEN";
+        boolean ticketingEnabled = true;
+        String ticketProvider = "local";
+        String ticketBaseUrl;
+        String ticketProjectId;
+        int ticketTypeId = 1;
+        String ticketTokenEnv = "GITLAB_TOKEN";
         // Docker deployment fields
         String dockerContainerName;
         String dockerServiceName;

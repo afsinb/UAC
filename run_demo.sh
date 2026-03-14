@@ -42,6 +42,46 @@ print_error() {
     echo -e "${RED}✗${NC} $1"
 }
 
+load_env_file() {
+    local env_file="$1"
+    if [ -f "$env_file" ]; then
+        # shellcheck disable=SC1090
+        set +e
+        set -a
+        source "$env_file"
+        local rc=$?
+        set +a
+        set -e
+        if [ $rc -eq 0 ]; then
+            print_step "Loaded integration env from $env_file"
+            return 0
+        fi
+        print_warning "Failed to source $env_file, ignoring malformed file"
+    fi
+    return 1
+}
+
+configure_openproject_env() {
+    # Shared defaults for OpenProject-backed ticketing in local-systems mode.
+    export OPENPROJECT_BASE_URL="${OPENPROJECT_BASE_URL:-http://localhost:8084}"
+    export OPENPROJECT_PROJECT_IDENTIFIER="${OPENPROJECT_PROJECT_IDENTIFIER:-uac}"
+    export OPENPROJECT_PROJECT_NAME="${OPENPROJECT_PROJECT_NAME:-UAC Monitoring}"
+
+    local integration_env="$SCRIPT_DIR/docker/.uac.env"
+    local legacy_env="$SCRIPT_DIR/docker/.openproject.env"
+
+    load_env_file "$integration_env" || load_env_file "$legacy_env" || true
+
+    if [ -z "${OPENPROJECT_API_TOKEN:-}" ]; then
+        print_warning "OPENPROJECT_API_TOKEN is not set. UAC will fall back to local ticket provider if OpenProject calls fail."
+        print_info "Optional: create $integration_env with OPENPROJECT_API_TOKEN=..."
+    fi
+
+    if [ -z "${GITHUB_TOKEN:-}" ]; then
+        print_info "GITHUB_TOKEN is not set. Real PR mode can still work through gh CLI auth if configured."
+    fi
+}
+
 cleanup_old_process() {
     print_info "Checking for old demo processes..."
     if pgrep -f "$DEMO_CLASS" > /dev/null; then
@@ -188,6 +228,9 @@ EXAMPLES:
     # Run local systems mode with real PR creation
     $0 --local-systems --real-pr
 
+    # Run with OpenProject defaults + token loaded from docker/.openproject.env
+    $0 --local-systems
+
     # Clean build and restart
     $0 --clean --restart
 
@@ -295,6 +338,7 @@ main() {
     if [ "$LOCAL_SYSTEMS" = true ]; then
         DEMO_CLASS="$LOCAL_MONITOR_CLASS"
         LOG_FILE="/tmp/uac-local-monitor.log"
+        configure_openproject_env
     else
         DEMO_CLASS="$WORKING_DEMO_CLASS"
         LOG_FILE="/tmp/uac-demo.log"

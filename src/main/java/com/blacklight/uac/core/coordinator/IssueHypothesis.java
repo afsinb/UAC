@@ -24,6 +24,16 @@ public class IssueHypothesis {
     public IssueType getIssueType() {
         return issueType;
     }
+
+    /** Convenience method: returns true when the issue type is OPERATIONAL. */
+    public boolean isOperational() {
+        return IssueType.OPERATIONAL == issueType;
+    }
+
+    /** Convenience method: returns true when the issue type is LOGICAL. */
+    public boolean isLogical() {
+        return IssueType.LOGICAL == issueType;
+    }
     
     public double getConfidence() {
         return confidence;
