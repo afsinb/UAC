@@ -2,6 +2,10 @@
 
 ## Recent Platform Updates (March 2026)
 
+- **Real PR fallback for unknown-source anomalies**: if a direct source file patch cannot be applied, UAC commits a learned fallback artifact and can still raise a real PR branch instead of stopping at `simulated:file-not-found`.
+- **Per-anomaly ticketing in consolidated deployment queues**: code-fix anomalies can share one deployment instance while each anomaly execution step tracks its own ticket lifecycle details.
+- **OpenProject numbering alignment**: ticket keys now follow native OpenProject work package numbering (`#<id>`) and link extraction resolves against work package endpoints.
+- **Ticket diagnostics on execution steps**: when a ticket cannot be created/updated (or is disabled), execution details now expose explicit reasons (e.g. `ticket-create-failed`, `ticketing-disabled`).
 - **Strict PR truth mapping (GitHub source of truth)**: dependency status now maps from real GH PR fields (`state`, `reviewDecision`, `isDraft`) instead of optimistic local defaults.
 - **Dependency-aware deployment lifecycle**: CODE_FIX flows can remain in `WAITING_DEPENDENCIES` with explicit queued deployment semantics until dependent PRs are merged.
 - **Cleaner real-mode dependencies**: synthetic compatibility follow-up PRs are no longer shown in real PR mode; only traceable PR dependencies are tracked.

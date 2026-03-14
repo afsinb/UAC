@@ -1,5 +1,7 @@
 package com.blacklight.uac.core.coordinator;
 
+import com.blacklight.uac.core.events.AnomalyDetectedEvent;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
 
@@ -22,6 +24,27 @@ public class ContextSnapshot {
         this.timestamp = System.currentTimeMillis();
         this.metrics = metrics != null ? new HashMap<>(metrics) : new HashMap<>();
         this.metadata = metadata != null ? new HashMap<>(metadata) : new HashMap<>();
+    }
+
+    /**
+     * Convenience constructor for creating a ContextSnapshot from an AnomalyDetectedEvent
+     * and a list of recent changes (e.g. DNA changes, git commits, etc.).
+     */
+    public ContextSnapshot(AnomalyDetectedEvent event, List<?> recentChanges) {
+        this.timestamp = System.currentTimeMillis();
+        this.metrics = new HashMap<>();
+        this.metadata = new HashMap<>();
+        if (event != null) {
+            this.metrics.put("healthScore", event.getHealthScore());
+            this.metrics.put("anomalyType", event.getAnomalyType());
+            if (event.getAnomalyData() != null) {
+                this.metrics.putAll(event.getAnomalyData());
+            }
+        }
+        if (recentChanges != null) {
+            this.metadata.put("recentChanges", recentChanges);
+            this.metadata.put("changeCount", recentChanges.size());
+        }
     }
     
     public long getTimestamp() {

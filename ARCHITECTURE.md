@@ -4,6 +4,14 @@
 
 UAC (Universal Autonomous Core) is a 5-phase self-healing system that automatically detects, diagnoses, and fixes application issues.
 
+## March 2026 Lifecycle Notes
+
+- **Dependency-aware execution state:** code-fix flows can remain in `WAITING_DEPENDENCIES` until all PR dependencies are merged.
+- **GitHub truth mapping:** dependency status (`OPEN` / `APPROVED` / `MERGED`) is resolved from live GitHub PR metadata in real mode.
+- **Consolidated deployment queue:** multiple code-fix anomalies for the same system can be consolidated into one deployment instance while preserving separate execution lineage.
+- **Per-anomaly ticketing:** even when deployment is consolidated, each anomaly execution step can track its own ticket lifecycle and URL.
+- **OpenProject alignment:** ticket key display follows native OpenProject work package numbering (`#<id>`).
+
 ## 5-Phase Healing Loop
 
 ```

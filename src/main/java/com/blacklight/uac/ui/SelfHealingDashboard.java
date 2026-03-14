@@ -121,6 +121,7 @@ public class SelfHealingDashboard {
         public String workflowStatus; // COMPLETED, WAITING_DEPENDENCIES, FAILED, RUNNING
         public List<Map<String, Object>> deploymentDependencies;
         public Map<String, Object> journey;
+        public Map<String, Object> ticket;
         
         public HealingFlow(String systemId, String type) {
             this.id = UUID.randomUUID().toString();
@@ -132,6 +133,7 @@ public class SelfHealingDashboard {
             this.workflowStatus = "RUNNING";
             this.deploymentDependencies = new ArrayList<>();
             this.journey = new HashMap<>();
+            this.ticket = new HashMap<>();
         }
     }
     
@@ -1124,6 +1126,7 @@ public class SelfHealingDashboard {
                 int systemCodeFixes = (int) allFlows.stream().filter(f -> f.systemId.equals(selectedSystem) && "CODE_FIX".equals(f.type)).count();
                 int systemOpFixes = (int) allFlows.stream().filter(f -> f.systemId.equals(selectedSystem) && "OPERATIONAL_FIX".equals(f.type)).count();
                 int systemDeployFixes = (int) allFlows.stream().filter(f -> f.systemId.equals(selectedSystem) && "DEPLOYMENT_FIX".equals(f.type)).count();
+                int systemFeatureFlows = (int) allFlows.stream().filter(f -> f.systemId.equals(selectedSystem) && "FEATURE_DELIVERY".equals(f.type)).count();
                 int systemAnomalies = (int) allFlows.stream().filter(f -> f.systemId.equals(selectedSystem)).count();
                 
                 obj.put("id", sys.id);
@@ -1135,7 +1138,9 @@ public class SelfHealingDashboard {
                 obj.put("codeFixes", systemCodeFixes);
                 obj.put("operationalFixes", systemOpFixes);
                 obj.put("deploymentFixes", systemDeployFixes);
+                obj.put("featureFlows", systemFeatureFlows);
                 obj.put("alarmCount", sys.systemAlarms.size());
+                obj.put("metrics", new HashMap<>(sys.metrics));
             }
             
             sendJson(exchange, obj);
@@ -1223,6 +1228,10 @@ public class SelfHealingDashboard {
             obj.put("deploymentFixes", stats.deploymentFixesApplied);
             obj.put("averageHealth", stats.averageHealthScore);
             obj.put("anomalyTypes", stats.anomalyTypeCount);
+            obj.put("featureFlows", (int) allFlows.stream().filter(f -> "FEATURE_DELIVERY".equals(f.type)).count());
+            obj.put("featureFlowsPausedByIncident", (int) allFlows.stream()
+                    .filter(f -> "FEATURE_DELIVERY".equals(f.type) && "PAUSED_BY_INCIDENT".equals(f.workflowStatus))
+                    .count());
             
             sendJson(exchange, obj);
         }

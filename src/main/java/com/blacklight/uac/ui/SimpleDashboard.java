@@ -15,14 +15,24 @@ import java.util.concurrent.*;
  * Uses SelfHealingDashboard data model
  */
 public class SimpleDashboard {
+
+    public interface ActionHandler {
+        Map<String, Object> approveFeatureFlow(String flowId);
+    }
     
     private final HttpServer server;
     private final int port;
     private final SelfHealingDashboard dashboard;
+    private final ActionHandler actionHandler;
     
     public SimpleDashboard(SelfHealingDashboard dashboard, int port) throws IOException {
+        this(dashboard, port, null);
+    }
+
+    public SimpleDashboard(SelfHealingDashboard dashboard, int port, ActionHandler actionHandler) throws IOException {
         this.dashboard = dashboard;
         this.port = port;
+        this.actionHandler = actionHandler;
         this.server = HttpServer.create(new InetSocketAddress(port), 0);
         setupRoutes();
     }
@@ -78,6 +88,7 @@ public class SimpleDashboard {
                     int systemFlows = (int) dashboard.allFlows.stream().filter(f -> f.systemId.equals(sys.id)).count();
                     int systemCode = (int) dashboard.allFlows.stream().filter(f -> f.systemId.equals(sys.id) && "CODE_FIX".equals(f.type)).count();
                     int systemOp = (int) dashboard.allFlows.stream().filter(f -> f.systemId.equals(sys.id) && "OPERATIONAL_FIX".equals(f.type)).count();
+                    int systemFeature = (int) dashboard.allFlows.stream().filter(f -> f.systemId.equals(sys.id) && "FEATURE_DELIVERY".equals(f.type)).count();
                     
                     data.put("id", sys.id);
                     data.put("name", sys.name);
@@ -87,9 +98,28 @@ public class SimpleDashboard {
                     data.put("successfulFixes", systemFlows);
                     data.put("codeFixes", systemCode);
                     data.put("operationalFixes", systemOp);
+                    data.put("featureFlows", systemFeature);
                     data.put("deploymentFixes", 0);
                     data.put("alarmCount", sys.systemAlarms.size());
+                    data.put("metrics", new HashMap<>(sys.metrics));
                 }
+                sendJson(exchange, data);
+            });
+
+            server.createContext("/api/stats", exchange -> {
+                Map<String, Object> data = new HashMap<>();
+                data.put("totalAnomalies", dashboard.stats.totalAnomaliesDetected);
+                data.put("totalFixes", dashboard.stats.totalFixesApplied);
+                data.put("successfulHealing", dashboard.stats.successfulHealing);
+                data.put("failedHealing", dashboard.stats.failedHealing);
+                data.put("codeFixes", dashboard.stats.codeFixesApplied);
+                data.put("operationalFixes", dashboard.stats.operationalFixesApplied);
+                data.put("deploymentFixes", dashboard.stats.deploymentFixesApplied);
+                data.put("averageHealth", dashboard.stats.averageHealthScore);
+                data.put("featureFlows", (int) dashboard.allFlows.stream().filter(f -> "FEATURE_DELIVERY".equals(f.type)).count());
+                data.put("featureFlowsPausedByIncident", (int) dashboard.allFlows.stream()
+                        .filter(f -> "FEATURE_DELIVERY".equals(f.type) && "PAUSED_BY_INCIDENT".equals(f.workflowStatus))
+                        .count());
                 sendJson(exchange, data);
             });
             
@@ -112,11 +142,72 @@ public class SimpleDashboard {
                         if (flow.journey != null && flow.journey.containsKey("stages")) {
                             m.put("journey", flow.journey);
                         }
+                        m.put("ticket", flow.ticket != null ? flow.ticket : Map.of());
                         m.put("deploymentDependencies", flow.deploymentDependencies != null ? flow.deploymentDependencies : List.of());
                         flows.add(m);
                     }
                 }
                 sendJson(exchange, flows);
+            });
+
+            server.createContext("/api/flows/approve", exchange -> {
+                if (!"POST".equalsIgnoreCase(exchange.getRequestMethod())) {
+                    exchange.sendResponseHeaders(405, 0);
+                    exchange.close();
+                    return;
+                }
+                if (actionHandler == null) {
+                    sendJson(exchange, Map.of("ok", false, "message", "Feature approval is not configured in this mode"));
+                    return;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(exchange.getRequestBody()));
+                StringBuilder body = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) body.append(line);
+
+                String json = body.toString();
+                String flowId = null;
+                if (json.contains("\"flowId\"")) {
+                    String[] parts = json.split("\"flowId\"")[1].split("\"");
+                    if (parts.length >= 2) {
+                        flowId = parts[1];
+                    }
+                }
+                if (flowId == null || flowId.isBlank()) {
+                    sendJson(exchange, Map.of("ok", false, "message", "Missing flowId"));
+                    return;
+                }
+
+                Map<String, Object> result = actionHandler.approveFeatureFlow(flowId);
+                sendJson(exchange, result == null ? Map.of("ok", false, "message", "No response from approval handler") : result);
+            });
+
+            server.createContext("/api/tickets", exchange -> {
+                List<Map<String, Object>> tickets = new ArrayList<>();
+                SelfHealingDashboard.SystemMonitor sys = getSelectedSystemMonitor();
+                if (sys == null) {
+                    sendJson(exchange, tickets);
+                    return;
+                }
+
+                for (var flow : dashboard.allFlows) {
+                    if (!sys.id.equals(flow.systemId)) {
+                        continue;
+                    }
+                    if (flow.ticket == null || flow.ticket.isEmpty()) {
+                        continue;
+                    }
+                    Map<String, Object> row = new LinkedHashMap<>();
+                    row.put("flowId", flow.id);
+                    row.put("flowStatus", flow.workflowStatus != null ? flow.workflowStatus : String.valueOf(flow.status));
+                    row.put("anomaly", flow.anomaly != null ? flow.anomaly.anomalyType : "UNKNOWN");
+                    row.put("severity", flow.anomaly != null ? flow.anomaly.severity : "UNKNOWN");
+                    row.put("createdAt", flow.createdAt);
+                    row.put("ticket", new LinkedHashMap<>(flow.ticket));
+                    tickets.add(row);
+                }
+                sendJson(exchange, tickets);
             });
             
             server.createContext("/api/flows/", exchange -> {
@@ -283,6 +374,7 @@ public class SimpleDashboard {
             steps.add(s);
         }
         m.put("steps", steps);
+        m.put("ticket", flow.ticket != null ? new HashMap<>(flow.ticket) : new HashMap<>());
         m.put("deploymentDependencies", flow.deploymentDependencies != null ? new ArrayList<>(flow.deploymentDependencies) : new ArrayList<>());
         if (flow.journey != null && !flow.journey.isEmpty()) {
             m.put("journey", flow.journey);
@@ -394,7 +486,10 @@ public class SimpleDashboard {
 .list-meta{font-size:11px;color:#7d8590}
 .badge{display:inline-block;padding:2px 6px;border-radius:3px;font-size:9px;font-weight:600;margin-left:6px}
 .badge.code-fix{background:#0969da33;color:#0969da}
+.badge.bugs{background:#0969da33;color:#0969da}
 .badge.operational-fix{background:#d2992233;color:#d29922}
+.badge.feature-delivery{background:#a371f733;color:#a371f7}
+.badge.features{background:#a371f733;color:#a371f7}
 .badge.waiting{background:#f59e0b33;color:#f59e0b}
 .modal{display:none;position:fixed;z-index:1000;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.5);align-items:center;justify-content:center}
 .modal.active{display:flex}
@@ -414,7 +509,9 @@ public class SimpleDashboard {
 <h2>Views</h2>
 <div class="nav-item active" data-view="dashboard" onclick="showDashboard()">📊 Dashboard</div>
 <div class="nav-item" data-view="flows" onclick="showFlows()">🔧 Fixes</div>
+<div class="nav-item" data-view="features" onclick="showFeatures()">✨ Features</div>
 <div class="nav-item" data-view="alarms" onclick="showAlarms()">🚨 Alarms</div>
+<div class="nav-item" data-view="tickets" onclick="showTickets()">🎫 Tickets</div>
 </div>
 <div class="main">
 <div class="header">
@@ -423,10 +520,13 @@ public class SimpleDashboard {
 </div>
 <div id="dashboard"><div class="grid" id="cards"></div>
 <div style="margin-top:20px"><h3 style="margin-bottom:10px">Recent Fixes</h3><div class="list" id="recent-flows"></div></div>
+<div style="margin-top:20px"><h3 style="margin-bottom:10px">Recent Features</h3><div class="list" id="recent-features"></div></div>
 <div style="margin-top:20px"><h3 style="margin-bottom:10px">Active Alarms</h3><div class="list" id="active-alarms"></div></div>
 </div>
 <div id="flows-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">All Fixes</h3><div class="list" id="all-flows"></div></div></div>
+<div id="features-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">All Features</h3><div class="list" id="all-features"></div></div></div>
 <div id="alarms-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">All Alarms</h3><div class="list" id="all-alarms"></div></div></div>
+<div id="tickets-view" style="display:none"><div style="margin-top:20px"><h3 style="margin-bottom:10px">Open Tickets & Ongoing Anomalies</h3><div class="list" id="all-tickets"></div></div></div>
 </div>
 </div>
 <div id="flowModal" class="modal"><div class="modal-content"><span class="modal-close" onclick="document.getElementById('flowModal').classList.remove('active')">&times;</span><div id="flow-details"></div></div></div>
@@ -435,6 +535,7 @@ public class SimpleDashboard {
 let selectedSystem = null;
 let flows = [];
 let alarms = [];
+let tickets = [];
 let flowFilter = 'ALL'; // Filter state for flows
 let alarmFilter = 'ALL'; // Filter state for alarms
 
@@ -477,6 +578,7 @@ async function selectSystem(id, name, element = null) {
     // Reload all data for this system
     flows = await fetch('/api/flows').then(r => r.json()).catch(e => { console.error('Flows error:', e); return []; });
     alarms = await fetch('/api/alarms').then(r => r.json()).catch(e => { console.error('Alarms error:', e); return []; });
+    tickets = await fetch('/api/tickets').then(r => r.json()).catch(e => { console.error('Tickets error:', e); return []; });
     
     console.log('Loaded flows:', flows.length, 'alarms:', alarms.length);
     await updateDashboard();
@@ -496,6 +598,7 @@ async function updateDashboard() {
             fixes: data.totalFixes || flows.length || 0,
             codeFixes: data.codeFixes || flows.filter(f => f.type === 'CODE_FIX').length || 0,
             opsFixes: data.operationalFixes || flows.filter(f => f.type === 'OPERATIONAL_FIX').length || 0,
+            features: data.featureFlows || flows.filter(f => f.type === 'FEATURE_DELIVERY').length || 0,
             success: data.totalFixes > 0 ? ((data.successfulFixes/data.totalFixes)*100).toFixed(0) : 0
         };
         
@@ -503,6 +606,7 @@ async function updateDashboard() {
             <div class="card" onclick="setFlowFilter('ALL')" id="card-all" style="cursor:pointer;border-color:#0969da;background:#0969da11"><div class="card-title">All Fixes</div><div class="card-value">${stats.fixes}</div></div>
             <div class="card" onclick="setFlowFilter('CODE')" id="card-code" style="cursor:pointer"><div class="card-title">Code Fixes</div><div class="card-value">${stats.codeFixes}</div></div>
             <div class="card" onclick="setFlowFilter('OPERATIONAL')" id="card-ops" style="cursor:pointer"><div class="card-title">Ops Fixes</div><div class="card-value">${stats.opsFixes}</div></div>
+            <div class="card"><div class="card-title">Features</div><div class="card-value">${stats.features}</div></div>
             <div class="card"><div class="card-title">Health</div><div class="card-value" style="color:${stats.health>70?'#3fb950':stats.health>40?'#d29922':'#f85149'}">${stats.health.toFixed(0)}%</div></div>
             <div class="card"><div class="card-title">Anomalies</div><div class="card-value">${stats.anomalies}</div></div>
             <div class="card"><div class="card-title">Success Rate</div><div class="card-value">${stats.success}%</div></div>
@@ -511,13 +615,29 @@ async function updateDashboard() {
         
         // Update views
         updateFlowsView();
+        updateFeaturesView();
         updateAlarmsView();
+        updateTicketsView();
         
     } catch(e) { console.error('Dashboard update error:', e); }
 }
 
 function updateFlowsView() {
     const filtered = getFilteredFlows();
+
+    const flowTag = (flow) => {
+        const type = (flow && flow.type) ? flow.type : 'UNKNOWN';
+        if (type === 'FEATURE_DELIVERY') {
+            return '<span class="badge features">FEATURES</span>';
+        }
+        if (type === 'CODE_FIX' || type === 'BUG_FIX') {
+            return '<span class="badge bugs">BUGS</span>';
+        }
+        if (type === 'OPERATIONAL_FIX') {
+            return '<span class="badge operational-fix">OPERATIONS</span>';
+        }
+        return `<span class="badge ${type.toLowerCase().replace('_','-')}">${type}</span>`;
+    };
 
     const journeyStrip = (flow) => {
         const stages = flow && flow.journey && Array.isArray(flow.journey.stages) ? flow.journey.stages : [];
@@ -533,21 +653,61 @@ function updateFlowsView() {
 
     const html = filtered.map(f => `
         <div class="list-item" onclick="showFlow('${f.id}')">
-            <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
+            <div class="list-title">${f.id.substring(0,12)}... ${flowTag(f)}</div>
             <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${(f.ticket && f.ticket.key) ? `<div class="list-meta" style="margin-top:4px">Ticket: ${f.ticket.key} (${f.ticket.status || 'OPEN'})</div>` : ''}
             ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes matching filter</p>';
     
     document.getElementById('recent-flows').innerHTML = filtered.slice(0, 3).map(f => `
         <div class="list-item" onclick="showFlow('${f.id}')">
-            <div class="list-title">${f.id.substring(0,12)}... <span class="badge ${f.type.toLowerCase().replace('_','-')}">${f.type}</span></div>
+            <div class="list-title">${f.id.substring(0,12)}... ${flowTag(f)}</div>
             <div class="list-meta">${f.anomaly || 'Unknown'} | ${f.stepCount || 0} steps | ${f.status}${f.status==='WAITING_DEPENDENCIES' ? ' <span class="badge waiting">WAITING</span>' : ''}</div>
+            ${(f.ticket && f.ticket.key) ? `<div class="list-meta" style="margin-top:4px">Ticket: ${f.ticket.key} (${f.ticket.status || 'OPEN'})</div>` : ''}
             ${journeyStrip(f)}
         </div>
     `).join('') || '<p style="color:#7d8590">No fixes</p>';
     
     document.getElementById('all-flows').innerHTML = html;
+}
+
+function updateFeaturesView() {
+    const features = (flows || []).filter(f => f.type === 'FEATURE_DELIVERY');
+    const statusBadge = (status) => {
+        const s = (status || 'UNKNOWN').toUpperCase();
+        if (s === 'PAUSED_BY_INCIDENT') {
+            return '<span class="badge" style="background:#f59e0b33;color:#f59e0b">PAUSED_BY_INCIDENT</span>';
+        }
+        if (s === 'AWAITING_APPROVAL') {
+            return '<span class="badge" style="background:#58a6ff33;color:#58a6ff">AWAITING_APPROVAL</span>';
+        }
+        if (s === 'READY_FOR_AUTONOMOUS_EXECUTION') {
+            return '<span class="badge" style="background:#3fb95033;color:#3fb950">READY</span>';
+        }
+        if (s === 'PLANNED') {
+            return '<span class="badge" style="background:#7d859033;color:#7d8590">PLANNED</span>';
+        }
+        return `<span class="badge" style="background:#7d859033;color:#7d8590">${s}</span>`;
+    };
+
+    const html = features.map(f => `
+        <div class="list-item" onclick="showFlow('${f.id}')">
+            <div class="list-title">${f.id.substring(0,12)}... <span class="badge features">FEATURES</span></div>
+            <div class="list-meta">${f.anomaly || 'FEATURE_REQUEST'} | ${f.stepCount || 0} steps | ${statusBadge(f.status)}</div>
+            ${(f.ticket && f.ticket.key) ? `<div class="list-meta" style="margin-top:4px">Ticket: ${f.ticket.key} (${f.ticket.status || 'OPEN'})</div>` : ''}
+        </div>
+    `).join('') || '<p style="color:#7d8590">No feature flows</p>';
+
+    const recent = features.slice(0, 3).map(f => `
+        <div class="list-item" onclick="showFlow('${f.id}')">
+            <div class="list-title">${f.id.substring(0,12)}... <span class="badge features">FEATURES</span></div>
+            <div class="list-meta">${f.anomaly || 'FEATURE_REQUEST'} | ${f.stepCount || 0} steps | ${statusBadge(f.status)}</div>
+        </div>
+    `).join('') || '<p style="color:#7d8590">No features</p>';
+
+    document.getElementById('all-features').innerHTML = html;
+    document.getElementById('recent-features').innerHTML = recent;
 }
 
 function updateAlarmsView() {
@@ -566,6 +726,28 @@ function updateAlarmsView() {
     `).join('') || '<p style="color:#7d8590">No alarms</p>';
 
     document.getElementById('all-alarms').innerHTML = html;
+}
+
+function updateTicketsView() {
+    const list = (tickets || []).slice().sort((a,b) => (b.createdAt || 0) - (a.createdAt || 0));
+    const html = list.map(t => {
+        const tk = t.ticket || {};
+        const key = tk.key || tk.id || 'N/A';
+        const provider = tk.provider || 'local';
+        const status = tk.status || 'OPEN';
+        const flowStatus = t.flowStatus || 'RUNNING';
+        const link = (tk.url || '').startsWith('http')
+            ? `<a href="${tk.url}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff">open</a>`
+            : '<span style="color:#7d8590">local</span>';
+        const waiting = flowStatus === 'WAITING_DEPENDENCIES' ? ' ⏳ waiting deps' : '';
+        return `<div class="list-item" onclick="showFlow('${t.flowId}')">
+            <div class="list-title">${key} <span class="badge" style="background:#58a6ff22;color:#58a6ff">${provider}</span></div>
+            <div class="list-meta">${t.anomaly || 'UNKNOWN'} (${t.severity || 'N/A'}) | flow: ${flowStatus}${waiting}</div>
+            <div class="list-meta">ticket status: ${status} | link: ${link}</div>
+        </div>`;
+    }).join('') || '<p style="color:#7d8590">No tickets for selected system yet</p>';
+
+    document.getElementById('all-tickets').innerHTML = html;
 }
 
 function updateCardHighlight() {
@@ -638,6 +820,26 @@ async function showFlow(flowId) {
             ${flow.anomaly.stackTrace ? `<pre style="padding:8px;background:#161b22;border-radius:4px;font-size:10px;white-space:pre-wrap;max-height:110px;overflow-y:auto;margin:0">${flow.anomaly.stackTrace}</pre>` : ''}
         </div>` : '';
 
+        const ticket = flow.ticket && Object.keys(flow.ticket).length ? flow.ticket : null;
+        const ticketComments = ticket && Array.isArray(ticket.comments)
+            ? ticket.comments.slice(-5).map(c => `<div style="font-size:11px;color:#94a3b8;margin-top:4px">- ${c}</div>`).join('')
+            : '';
+        const ticketLabels = ticket && Array.isArray(ticket.labels)
+            ? ticket.labels.map(l => `<span class="badge" style="background:#0969da33;color:#58a6ff">${l}</span>`).join(' ')
+            : '';
+        const ticketHtml = ticket ? `
+        <div style="background:#0f1419;border-radius:6px;padding:12px;margin-bottom:14px">
+            <div style="font-size:10px;color:#7d8590;margin-bottom:8px;font-weight:600;letter-spacing:.5px">TICKET TRACKING</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;margin-bottom:8px">
+                <div><span style="color:#7d8590">Provider:</span> <strong>${ticket.provider || 'local'}</strong></div>
+                <div><span style="color:#7d8590">Status:</span> <strong>${ticket.status || 'OPEN'}</strong></div>
+                <div><span style="color:#7d8590">Key:</span> <strong>${ticket.key || ticket.id || 'N/A'}</strong></div>
+                <div><span style="color:#7d8590">Link:</span> ${(ticket.url || '').startsWith('http') ? `<a href="${ticket.url}" target="_blank" rel="noopener noreferrer" style="color:#58a6ff">open</a>` : '<span style="color:#94a3b8">local</span>'}</div>
+            </div>
+            ${ticketLabels ? `<div style="margin-bottom:6px">${ticketLabels}</div>` : ''}
+            ${ticketComments}
+        </div>` : '';
+
         const journeyStages = flow.journey && Array.isArray(flow.journey.stages) ? flow.journey.stages : [];
         const journeyHtml = journeyStages.length ? `<div style="margin-bottom:14px"><strong>Flow Journey (Anomaly -> Fix -> Deployment)</strong><div class="journey-row">${journeyStages.map(s => {
             const st = (s.status || 'PENDING').toUpperCase();
@@ -652,9 +854,15 @@ async function showFlow(flowId) {
         }).join('')}</div></div>` : '';
 
         const typeBadge = (flow.type||'').toLowerCase().replaceAll('_','-');
+        const canApproveFeature = flow.type === 'FEATURE_DELIVERY' && ['AWAITING_APPROVAL', 'PAUSED_BY_INCIDENT', 'PLANNED'].includes(flow.status);
+        const featureActionHtml = canApproveFeature ? `
+            <div style="margin-bottom:14px;display:flex;gap:10px;align-items:center">
+                <button onclick="approveFeature('${flow.id}')" style="background:#238636;color:#fff;border:none;border-radius:6px;padding:8px 14px;cursor:pointer;font-weight:600">Approve & Execute</button>
+                <span style="font-size:11px;color:#94a3b8">Incident-first policy still applies. If incidents are active, execution will wait.</span>
+            </div>` : '';
         const date = new Date(flow.createdAt||0).toLocaleString();
         document.getElementById('flow-details').innerHTML = `
-            <h2 style="margin-bottom:14px">🔧 Fix Details</h2>
+            <h2 style="margin-bottom:14px">${flow.type === 'FEATURE_DELIVERY' ? '✨ Feature Details' : '🔧 Fix Details'}</h2>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
                 <div style="background:#0f1419;border-radius:6px;padding:10px;grid-column:1/-1">
                     <div style="font-size:10px;color:#7d8590;margin-bottom:3px">ID</div>
@@ -673,12 +881,35 @@ async function showFlow(flowId) {
                     <div>${date}</div>
                 </div>
             </div>
+            ${featureActionHtml}
             ${anomalyHtml}
+            ${ticketHtml}
             ${journeyHtml}
             <div><strong>Execution Steps (${(flow.steps||[]).length})</strong>${steps}</div>
         `;
         document.getElementById('flowModal').classList.add('active');
     } catch(e) { console.error('Flow modal error:', e); }
+}
+
+async function approveFeature(flowId) {
+    try {
+        const res = await fetch('/api/flows/approve', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({flowId})
+        }).then(r => r.json());
+
+        alert(res.message || (res.ok ? 'Feature approval submitted' : 'Feature approval failed'));
+        flows = await fetch('/api/flows').then(r => r.json()).catch(() => flows);
+        tickets = await fetch('/api/tickets').then(r => r.json()).catch(() => tickets);
+        await updateDashboard();
+        if (document.getElementById('flowModal').classList.contains('active')) {
+            await showFlow(flowId);
+        }
+    } catch (e) {
+        console.error('Approve feature error:', e);
+        alert('Failed to approve feature flow');
+    }
 }
 
 async function showAlarm(alarmId) {
@@ -725,22 +956,46 @@ async function showAlarm(alarmId) {
 function showDashboard() {
     document.getElementById('dashboard').style.display='block';
     document.getElementById('flows-view').style.display='none';
+    document.getElementById('features-view').style.display='none';
     document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('dashboard');
 }
 
 function showFlows() {
     document.getElementById('dashboard').style.display='none';
     document.getElementById('flows-view').style.display='block';
+    document.getElementById('features-view').style.display = 'none';
     document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('flows');
+}
+
+function showFeatures() {
+    document.getElementById('dashboard').style.display = 'none';
+    document.getElementById('flows-view').style.display = 'none';
+    document.getElementById('features-view').style.display = 'block';
+    document.getElementById('alarms-view').style.display = 'none';
+    document.getElementById('tickets-view').style.display = 'none';
+    setActiveNav('features');
 }
 
 function showAlarms() {
     document.getElementById('dashboard').style.display='none';
     document.getElementById('flows-view').style.display='none';
+    document.getElementById('features-view').style.display = 'none';
     document.getElementById('alarms-view').style.display='block';
+    document.getElementById('tickets-view').style.display='none';
     setActiveNav('alarms');
+}
+
+function showTickets() {
+    document.getElementById('dashboard').style.display='none';
+    document.getElementById('flows-view').style.display='none';
+    document.getElementById('features-view').style.display = 'none';
+    document.getElementById('alarms-view').style.display='none';
+    document.getElementById('tickets-view').style.display='block';
+    setActiveNav('tickets');
 }
 
 loadData();

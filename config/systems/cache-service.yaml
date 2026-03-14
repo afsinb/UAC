@@ -25,6 +25,23 @@ git:
   branch: main
   token_env: GITHUB_TOKEN
 
+ticketing:
+  enabled: true
+  provider: openproject
+  base_url: http://localhost:8084
+  project_id: uac
+  type_id: 1
+  token_env: OPENPROJECT_API_TOKEN
+
+feature_intake:
+  enabled: true
+  label: feature
+  poll_interval_seconds: 60
+  scan_pages: 20
+  scan_page_size: 100
+  window_seconds: 240
+  anomaly_ticket_throttle_seconds: 120
+
 deployment:
   type: docker
   container_name: uac-cache-service
