@@ -2,7 +2,13 @@
 
 ## Recent Main Branch Snapshot (March 2026)
 
-Recent `developV3` updates include improved real PR behavior for unknown-source anomalies, per-anomaly ticketing for consolidated code-fix flows, OpenProject-native ticket numbering (`#<id>`), and clearer ticket diagnostics on execution steps.
+Recent `developV3` updates include:
+
+- Feature-delivery lane support: ticket intake, feature risk-gate (`AWAITING_APPROVAL` / `READY_FOR_AUTONOMOUS_EXECUTION`), and incident-first preemption (`PAUSED_BY_INCIDENT`).
+- Dashboard upgrades for feature operations (`✨ Features` views, `FEATURES` / `BUGS` tags, feature telemetry and counts).
+- End-to-end approval execution path via `POST /api/flows/approve` with `APPROVED_FOR_EXECUTION` and automatic execution drain after incidents clear.
+- Deterministic sample feature implementations (payment idempotency, cache top-keys stats, worker dead-letter summary) before fallback feature-plan artifact generation.
+- Approval UX/state fix: `Approve & Execute` no longer renders for already execution-ready flows, and backend approval handling is idempotent for repeated clicks.
 
 Useful verification commands:
 

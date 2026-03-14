@@ -33,6 +33,15 @@ ticketing:
   type_id: 1
   token_env: OPENPROJECT_API_TOKEN
 
+feature_intake:
+  enabled: true
+  label: feature
+  poll_interval_seconds: 60
+  scan_pages: 20
+  scan_page_size: 100
+  window_seconds: 240
+  anomaly_ticket_throttle_seconds: 120
+
 deployment:
   type: docker
   container_name: uac-payment-api

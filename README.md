@@ -16,6 +16,10 @@ A non-invasive autonomous monitoring layer that automatically detects, diagnoses
 ✅ **Self-Deploy** - Code patches via CI/CD  
 
 ### Recent Changes (March 2026)
+- `developV3 (latest)` Added a feature-delivery lane with ticket intake, risk-gated feature approval, incident-first preemption, and dashboard `FEATURES` tagging/visibility.
+- `developV3 (latest)` Implemented end-to-end feature approval execution (`/api/flows/approve`, `APPROVED_FOR_EXECUTION` handling, auto-drain when incidents clear).
+- `developV3 (latest)` Added deterministic real-code feature implementation heuristics for sample systems (`payment-api` idempotency, `cache-service` top-keys stats, `worker-service` dead-letter summary) with regression tests.
+- `developV3 (latest)` Fixed approval UX/state mismatch so `Approve & Execute` no longer appears for `READY_FOR_AUTONOMOUS_EXECUTION`, and made approval API behavior idempotent for already-approved flows.
 - `4047036` Improved real PR/ticket lifecycle: unknown-source anomalies can still create PRs using learned fallback artifacts, OpenProject work package IDs map correctly, and consolidated anomaly steps can have per-anomaly tickets.
 - `143ff2a` Persisted newly learned anomaly rules and fix recipes into `config/next/*-learned.yaml`.
 - `d70af23` Enforced strict GitHub truth for PR dependency status mapping (`MERGED` and `APPROVED` only from GH state/review decision).

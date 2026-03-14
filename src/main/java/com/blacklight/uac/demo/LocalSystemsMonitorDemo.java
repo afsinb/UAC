@@ -5,6 +5,7 @@ import com.blacklight.uac.git.GitHubAPI;
 import com.blacklight.uac.ai.AIDecisionEngine;
 import com.blacklight.uac.evolver.PRDeploymentGate;
 import com.blacklight.uac.evolver.PRLifecycleState;
+import com.blacklight.uac.mcp.MCPOrchestrator;
 import com.blacklight.uac.ui.SelfHealingDashboard;
 import com.blacklight.uac.ui.SimpleDashboard;
 
@@ -26,6 +27,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -52,16 +54,18 @@ public class LocalSystemsMonitorDemo {
     private final AnomalyRuleRegistry anomalyRuleRegistry;
     private final PRDeploymentGate deploymentGate;
     private final OpenSourceTicketingService ticketingService;
+    private final MCPOrchestrator mcpOrchestrator;
 
     public LocalSystemsMonitorDemo(int dashboardPort, int dataPort) throws IOException {
         this.dataModel = new SelfHealingDashboard(dataPort);
-        this.dashboard = new SimpleDashboard(dataModel, dashboardPort);
+        this.dashboard = new SimpleDashboard(dataModel, dashboardPort, this::approveFeatureFlow);
         this.scheduler = Executors.newScheduledThreadPool(4);
         this.systems = new LinkedHashMap<>();
         this.realPrMode = "true".equalsIgnoreCase(System.getenv().getOrDefault("UAC_REAL_PR", "false"));
         this.aiDecisionEngine = new AIDecisionEngine();
         this.deploymentGate = PRDeploymentGate.getInstance();
         this.ticketingService = new OpenSourceTicketingService();
+        this.mcpOrchestrator = new MCPOrchestrator();
         Path projectRoot = Paths.get(System.getProperty("user.dir")).toAbsolutePath().normalize();
         this.anomalyRuleRegistry = new AnomalyRuleRegistry(
                 projectRoot.resolve("config").resolve("next").resolve("anomaly-rules.yaml"),
@@ -121,6 +125,8 @@ public class LocalSystemsMonitorDemo {
                 updateHealthAndGenerateFlows(cfg, health);
                 scanNewLogLines(cfg);
                 refreshWaitingDependencyStates(cfg);
+                pollFeatureTickets(cfg);
+                drainApprovedFeatureExecutions(cfg);
             } catch (Exception ex) {
                 addAlarm(cfg, "MONITORING_FAILURE", "HIGH", "Health poll failed: " + ex.getMessage(), null);
             }
@@ -497,6 +503,13 @@ public class LocalSystemsMonitorDemo {
         if (!ticketConfig.enabled) {
             executionStep.details.put("ticketStatus", "SKIPPED");
             executionStep.details.put("ticketReason", "ticketing-disabled");
+            return;
+        }
+
+        if (shouldSuppressAnomalyTicketing(cfg, severity, anomalyType)) {
+            executionStep.details.put("ticketStatus", "SKIPPED");
+            executionStep.details.put("ticketReason", "feature-intake-noise-guard");
+            publishFeatureIntakeMetrics(cfg, "anomaly-ticket-suppressed");
             return;
         }
 
@@ -890,6 +903,219 @@ public class LocalSystemsMonitorDemo {
         return pr == null ? null : String.valueOf(pr);
     }
 
+    private SystemConfig findConfigForFlow(SelfHealingDashboard.HealingFlow flow) {
+        if (flow == null) {
+            return null;
+        }
+        for (SystemConfig cfg : systems.values()) {
+            if (dataModel.getSystemId(cfg.name).equals(flow.systemId)) {
+                return cfg;
+            }
+        }
+        return null;
+    }
+
+    private Map<String, Object> approveFeatureFlow(String flowId) {
+        if (flowId == null || flowId.isBlank()) {
+            return Map.of("ok", false, "message", "Missing feature flow id");
+        }
+
+        SelfHealingDashboard.HealingFlow target = null;
+        synchronized (dataModel.allFlows) {
+            for (SelfHealingDashboard.HealingFlow flow : dataModel.allFlows) {
+                if (flow != null && flowId.equals(flow.id)) {
+                    target = flow;
+                    break;
+                }
+            }
+        }
+        if (target == null) {
+            return Map.of("ok", false, "message", "Feature flow not found: " + flowId);
+        }
+        if (!"FEATURE_DELIVERY".equals(target.type)) {
+            return Map.of("ok", false, "message", "Flow is not a feature-delivery flow");
+        }
+
+        SystemConfig cfg = findConfigForFlow(target);
+        if (cfg == null) {
+            return Map.of("ok", false, "message", "Owning system config not found for feature flow");
+        }
+
+        String currentStatus = defaultIfBlank(target.workflowStatus, "PLANNED");
+        if ("COMPLETED".equals(currentStatus) || "WAITING_DEPENDENCIES".equals(currentStatus) || "IN_PROGRESS".equals(currentStatus)) {
+            return Map.of(
+                    "ok", true,
+                    "status", currentStatus,
+                    "message", "Feature is already executing or completed."
+            );
+        }
+
+        if ("APPROVED_FOR_EXECUTION".equals(currentStatus) || "READY_FOR_AUTONOMOUS_EXECUTION".equals(currentStatus)) {
+            if (hasActiveIncidentForSystem(cfg)) {
+                return Map.of(
+                        "ok", true,
+                        "status", currentStatus,
+                        "message", "Feature is already approved. Execution will start after active incidents clear."
+                );
+            }
+            startFeatureExecution(cfg, target);
+            return Map.of(
+                    "ok", true,
+                    "status", defaultIfBlank(target.workflowStatus, currentStatus),
+                    "message", "Feature is already approved. Execution started."
+            );
+        }
+
+        if (!("AWAITING_APPROVAL".equals(currentStatus)
+                || "PAUSED_BY_INCIDENT".equals(currentStatus)
+                || "PLANNED".equals(currentStatus))) {
+            return Map.of(
+                    "ok", false,
+                    "status", currentStatus,
+                    "message", "Feature cannot be approved from current status: " + currentStatus
+            );
+        }
+
+        if (target.ticket != null && !target.ticket.isEmpty()) {
+            applyFeatureRiskGate(target, target.ticket);
+        }
+
+        SelfHealingDashboard.FlowStep execution = findStep(target, "EXECUTION");
+        if (execution != null) {
+            execution.details.put("manualApprovalGranted", true);
+            execution.details.put("approvedAt", Instant.now().toString());
+        }
+
+        boolean approvalRequired = execution != null
+                && Boolean.parseBoolean(String.valueOf(execution.details.getOrDefault("approvalRequired", false)));
+        target.workflowStatus = approvalRequired ? "APPROVED_FOR_EXECUTION" : "READY_FOR_AUTONOMOUS_EXECUTION";
+        if (target.journey == null) {
+            target.journey = new LinkedHashMap<>();
+        }
+        target.journey.put("flowStatus", target.workflowStatus);
+
+        syncTicketForFlow(
+                cfg,
+                target,
+                target.anomaly != null ? defaultIfBlank(target.anomaly.anomalyType, "FEATURE_REQUEST") : "FEATURE_REQUEST",
+                target.anomaly != null ? defaultIfBlank(target.anomaly.severity, "MEDIUM") : "MEDIUM",
+                target.anomaly != null ? defaultIfBlank(target.anomaly.message, "Feature approved") : "Feature approved",
+                target.anomaly != null ? defaultIfBlank(target.anomaly.sourceFile, "FeatureTicket") : "FeatureTicket",
+                target.anomaly != null ? target.anomaly.lineNumber : 0,
+                extractExecutionPrId(target),
+                target.workflowStatus,
+                "Feature approved for autonomous execution",
+                target.deploymentDependencies != null ? target.deploymentDependencies : List.of()
+        );
+
+        if (hasActiveIncidentForSystem(cfg)) {
+            return Map.of(
+                    "ok", true,
+                    "status", target.workflowStatus,
+                    "message", "Feature approved. Execution will start after active incidents clear."
+            );
+        }
+
+        startFeatureExecution(cfg, target);
+        return Map.of(
+                "ok", true,
+                "status", target.workflowStatus,
+                "message", "Feature approved and execution started."
+        );
+    }
+
+    private void drainApprovedFeatureExecutions(SystemConfig cfg) {
+        if (cfg == null || hasActiveIncidentForSystem(cfg)) {
+            return;
+        }
+        String systemId = dataModel.getSystemId(cfg.name);
+        synchronized (dataModel.allFlows) {
+            for (SelfHealingDashboard.HealingFlow flow : dataModel.allFlows) {
+                if (flow == null || !systemId.equals(flow.systemId) || !"FEATURE_DELIVERY".equals(flow.type)) {
+                    continue;
+                }
+                String workflow = defaultIfBlank(flow.workflowStatus, "PLANNED");
+                if ("READY_FOR_AUTONOMOUS_EXECUTION".equals(workflow)
+                        || "APPROVED_FOR_EXECUTION".equals(workflow)) {
+                    startFeatureExecution(cfg, flow);
+                }
+            }
+        }
+    }
+
+    private void startFeatureExecution(SystemConfig cfg, SelfHealingDashboard.HealingFlow flow) {
+        if (cfg == null || flow == null || !"FEATURE_DELIVERY".equals(flow.type)) {
+            return;
+        }
+
+        String current = defaultIfBlank(flow.workflowStatus, "PLANNED");
+        if ("IN_PROGRESS".equals(current) || "WAITING_DEPENDENCIES".equals(current) || "COMPLETED".equals(current)) {
+            return;
+        }
+
+        String prId = realPrMode
+                ? executeRealFeaturePlanAndPr(cfg, flow, "PR-" + shortId())
+                : "PR-" + shortId();
+
+        List<Map<String, Object>> deps = new ArrayList<>();
+        Map<String, Object> dep = new HashMap<>();
+        dep.put("id", extractPrId(prId, "PR-" + shortId()));
+        dep.put("name", "Feature implementation review");
+        dep.put("title", flow.anomaly != null ? defaultIfBlank(flow.anomaly.message, "Feature delivery") : "Feature delivery");
+        dep.put("status", "OPEN");
+        deps.add(dep);
+
+        SelfHealingDashboard.FlowStep execution = findStep(flow, "EXECUTION");
+        if (execution != null) {
+            execution.status = "COMPLETED";
+            execution.action = "Feature implementation PR prepared";
+            execution.details.put("prId", prId);
+            execution.details.put("executionMode", realPrMode ? "real-pr" : "simulated-pr");
+        }
+
+        SelfHealingDashboard.FlowStep deploy = findStep(flow, "DEPLOY");
+        if (deploy != null) {
+            deploy.status = "PENDING";
+            deploy.action = "Deployment waiting for feature PR merge";
+            deploy.details.put("status", "waiting-dependencies");
+        }
+
+        SelfHealingDashboard.FlowStep validation = findStep(flow, "VALIDATION");
+        if (validation != null) {
+            validation.status = "PENDING";
+            validation.action = "Feature validation pending PR merge";
+            validation.details.put("status", "blocked_by_dependencies");
+        }
+
+        flow.deploymentDependencies = deps;
+        flow.workflowStatus = "WAITING_DEPENDENCIES";
+        flow.journey = buildJourney(
+                flow.workflowStatus,
+                flow.createdAt,
+                System.currentTimeMillis(),
+                null,
+                "Feature request accepted from ticketing",
+                "Feature plan and implementation PR prepared",
+                "Deployment waiting for merged feature PR",
+                deps
+        );
+
+        syncTicketForFlow(
+                cfg,
+                flow,
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.anomalyType, "FEATURE_REQUEST") : "FEATURE_REQUEST",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.severity, "MEDIUM") : "MEDIUM",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.message, "Feature execution started") : "Feature execution started",
+                flow.anomaly != null ? defaultIfBlank(flow.anomaly.sourceFile, "FeatureTicket") : "FeatureTicket",
+                flow.anomaly != null ? flow.anomaly.lineNumber : 0,
+                prId,
+                flow.workflowStatus,
+                "Feature implementation PR opened and awaiting merge",
+                deps
+        );
+        addAlarm(cfg, "FEATURE_EXECUTION_STARTED", "MEDIUM", "Feature execution started: " + (flow.anomaly != null ? flow.anomaly.message : flow.id), flow.id);
+    }
+
     private void addAlarm(SystemConfig cfg, String type, String severity, String message, String flowId) {
         String systemId = dataModel.getSystemId(cfg.name);
         SelfHealingDashboard.Alarm alarm = new SelfHealingDashboard.Alarm(systemId, type, severity, message);
@@ -944,6 +1170,16 @@ public class LocalSystemsMonitorDemo {
 
         OpenSourceTicketingService.TicketConfig ticketConfig = buildTicketConfig(cfg);
         if (!ticketConfig.enabled) {
+            return;
+        }
+
+        if (shouldSuppressAnomalyTicketing(cfg, severity, anomalyType)) {
+            SelfHealingDashboard.FlowStep executionStep = findStep(flow, "EXECUTION");
+            if (executionStep != null) {
+                executionStep.details.put("ticketStatus", "SKIPPED");
+                executionStep.details.put("ticketReason", "feature-intake-noise-guard");
+            }
+            publishFeatureIntakeMetrics(cfg, "anomaly-ticket-suppressed");
             return;
         }
 
@@ -1107,6 +1343,365 @@ public class LocalSystemsMonitorDemo {
         return journey;
     }
 
+    private void pollFeatureTickets(SystemConfig cfg) {
+        if (cfg == null || !cfg.featureIntakeEnabled) {
+            return;
+        }
+
+        cfg.featurePollCount++;
+        long pollEvery = Math.max(15, cfg.featurePollIntervalSeconds);
+        if (!shouldTrigger(cfg, "feature-intake", pollEvery)) {
+            return;
+        }
+
+        OpenSourceTicketingService.TicketConfig ticketConfig = buildTicketConfig(cfg);
+        if (!ticketConfig.enabled) {
+            publishFeatureIntakeMetrics(cfg, "ticketing-disabled");
+            return;
+        }
+        if ("openproject".equalsIgnoreCase(defaultIfBlank(ticketConfig.provider, ""))
+                && !ticketConfig.isOpenProjectEnabled()) {
+            publishFeatureIntakeMetrics(cfg, "openproject-misconfigured");
+            return;
+        }
+        if ("gitlab".equalsIgnoreCase(defaultIfBlank(ticketConfig.provider, ""))
+                && !ticketConfig.isGitLabEnabled()) {
+            publishFeatureIntakeMetrics(cfg, "gitlab-misconfigured");
+            return;
+        }
+
+        List<Map<String, Object>> tickets = ticketingService.listOpenTickets(
+                ticketConfig,
+                cfg.featureTicketScanPages,
+                cfg.featureTicketPageSize
+        );
+        cfg.featureTicketsScanned += tickets.size();
+        if (tickets.isEmpty()) {
+            publishFeatureIntakeMetrics(cfg, "no-open-tickets");
+            return;
+        }
+
+        Map<String, Map<String, Object>> deduped = new LinkedHashMap<>();
+        for (Map<String, Object> ticket : tickets) {
+            String key = featureTicketKey(ticket);
+            if (!key.isBlank()) {
+                deduped.putIfAbsent(key, ticket);
+            }
+        }
+
+        int matched = 0;
+        int createdFlows = 0;
+        boolean blockedByIncident = hasActiveIncidentForSystem(cfg);
+        for (Map<String, Object> ticket : deduped.values()) {
+            if (!isFeatureTicket(ticket, cfg.featureLabel)) {
+                continue;
+            }
+            matched++;
+
+            String ticketKey = featureTicketKey(ticket);
+            if (ticketKey.isBlank() || cfg.completedFeatureTickets.contains(ticketKey)) {
+                continue;
+            }
+
+            SelfHealingDashboard.HealingFlow flow = resolveFeatureFlow(cfg, ticketKey);
+            if (flow == null) {
+                flow = createFeatureIntakeFlow(cfg, ticketKey, ticket);
+                createdFlows++;
+            }
+
+            if (blockedByIncident) {
+                markFeaturePausedByIncident(flow);
+                continue;
+            }
+
+            applyFeatureRiskGate(flow, ticket);
+            cfg.completedFeatureTickets.add(ticketKey);
+        }
+
+        cfg.featureTicketsMatched += matched;
+        cfg.featureFlowsCreated += createdFlows;
+        if (matched > 0) {
+            cfg.lastFeatureIntakeAt = System.currentTimeMillis();
+            long windowMs = Math.max(30, cfg.featureIntakeWindowSeconds) * 1000L;
+            cfg.featureIntakeWindowUntilMs = Math.max(cfg.featureIntakeWindowUntilMs, cfg.lastFeatureIntakeAt + windowMs);
+        }
+
+        String state;
+        if (blockedByIncident && matched > 0) {
+            state = "blocked-by-incident";
+        } else if (createdFlows > 0) {
+            state = "feature-flows-created";
+        } else if (matched > 0) {
+            state = "feature-tickets-observed";
+        } else {
+            state = "no-feature-match";
+        }
+
+        publishFeatureIntakeMetrics(cfg, state);
+        if (matched > 0 || createdFlows > 0) {
+            System.out.println("[FeatureIntake] system=" + cfg.name
+                    + " scanned=" + deduped.size()
+                    + " matched=" + matched
+                    + " created=" + createdFlows
+                    + " state=" + state);
+        }
+    }
+
+    private boolean shouldSuppressAnomalyTicketing(SystemConfig cfg, String severity, String anomalyType) {
+        if (cfg == null || !cfg.featureIntakeEnabled) {
+            return false;
+        }
+        if ("FEATURE_REQUEST".equalsIgnoreCase(defaultIfBlank(anomalyType, ""))) {
+            return false;
+        }
+
+        long now = System.currentTimeMillis();
+        if (now > cfg.featureIntakeWindowUntilMs) {
+            return false;
+        }
+
+        String sev = defaultIfBlank(severity, "LOW").toUpperCase(Locale.ROOT);
+        if ("HIGH".equals(sev) || "CRITICAL".equals(sev)) {
+            return false;
+        }
+
+        if (shouldTrigger(cfg, "anomaly-ticket-throttle", Math.max(30, cfg.featureAnomalyTicketThrottleSeconds))) {
+            return false;
+        }
+
+        cfg.suppressedAnomalyTickets++;
+        return true;
+    }
+
+    private void publishFeatureIntakeMetrics(SystemConfig cfg, String state) {
+        if (cfg == null) {
+            return;
+        }
+        String systemId = dataModel.getSystemId(cfg.name);
+        SelfHealingDashboard.SystemMonitor system = dataModel.findSystem(systemId);
+        if (system == null) {
+            return;
+        }
+
+        system.metrics.put("featurePollCount", cfg.featurePollCount);
+        system.metrics.put("featureTicketsScanned", cfg.featureTicketsScanned);
+        system.metrics.put("featureTicketsMatched", cfg.featureTicketsMatched);
+        system.metrics.put("featureFlowsCreated", cfg.featureFlowsCreated);
+        system.metrics.put("suppressedAnomalyTickets", cfg.suppressedAnomalyTickets);
+        system.metrics.put("featureIntakeState", defaultIfBlank(state, "unknown"));
+        system.metrics.put("featureIntakeWindowUntilMs", cfg.featureIntakeWindowUntilMs);
+        system.metrics.put("featureLastIntakeAtMs", cfg.lastFeatureIntakeAt);
+    }
+
+    private boolean hasActiveIncidentForSystem(SystemConfig cfg) {
+        String systemId = dataModel.getSystemId(cfg.name);
+        SelfHealingDashboard.SystemMonitor system = dataModel.findSystem(systemId);
+        if (system != null && system.healthScore < 0.75) {
+            return true;
+        }
+
+        synchronized (dataModel.allFlows) {
+            for (SelfHealingDashboard.HealingFlow flow : dataModel.allFlows) {
+                if (flow == null || !systemId.equals(flow.systemId)) {
+                    continue;
+                }
+                if ("FEATURE_DELIVERY".equals(flow.type)) {
+                    continue;
+                }
+
+                String workflow = defaultIfBlank(flow.workflowStatus, "RUNNING");
+                if ("WAITING_DEPENDENCIES".equals(workflow) || "RUNNING".equals(workflow)) {
+                    return true;
+                }
+
+                if (flow.anomaly != null) {
+                    String sev = defaultIfBlank(flow.anomaly.severity, "LOW").toUpperCase(Locale.ROOT);
+                    if (("HIGH".equals(sev) || "CRITICAL".equals(sev)) && !"COMPLETED".equals(workflow)) {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private boolean isFeatureTicket(Map<String, Object> ticket, String configuredLabel) {
+        String label = defaultIfBlank(configuredLabel, "feature").toLowerCase(Locale.ROOT);
+        String title = String.valueOf(ticket.getOrDefault("title", "")).toLowerCase(Locale.ROOT);
+        if (title.contains(label)) {
+            return true;
+        }
+
+        // Support common product-work wording beyond a single label token.
+        String[] keywords = new String[]{"feature", "enhancement", "story", "capability", "improvement"};
+        for (String keyword : keywords) {
+            if (title.contains(keyword)) {
+                return true;
+            }
+        }
+
+        Object labelsObj = ticket.get("labels");
+        if (labelsObj instanceof List<?> labels) {
+            for (Object raw : labels) {
+                String v = String.valueOf(raw).toLowerCase(Locale.ROOT);
+                if (v.contains(label)) {
+                    return true;
+                }
+                for (String keyword : keywords) {
+                    if (v.contains(keyword)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private String featureTicketKey(Map<String, Object> ticket) {
+        String provider = String.valueOf(ticket.getOrDefault("provider", "local"));
+        Object key = ticket.get("key");
+        if (key != null && !String.valueOf(key).isBlank()) {
+            return provider + ":" + key;
+        }
+        Object id = ticket.get("id");
+        return id == null ? "" : provider + ":" + id;
+    }
+
+    private SelfHealingDashboard.HealingFlow resolveFeatureFlow(SystemConfig cfg, String ticketKey) {
+        String flowId = cfg.featureFlowByTicket.get(ticketKey);
+        if (flowId == null || flowId.isBlank()) {
+            return null;
+        }
+        synchronized (dataModel.allFlows) {
+            for (SelfHealingDashboard.HealingFlow flow : dataModel.allFlows) {
+                if (flow != null && flowId.equals(flow.id)) {
+                    return flow;
+                }
+            }
+        }
+        return null;
+    }
+
+    private SelfHealingDashboard.HealingFlow createFeatureIntakeFlow(SystemConfig cfg,
+                                                                     String ticketKey,
+                                                                     Map<String, Object> ticket) {
+        String systemId = dataModel.getSystemId(cfg.name);
+        SelfHealingDashboard.HealingFlow flow = new SelfHealingDashboard.HealingFlow(systemId, "FEATURE_DELIVERY");
+
+        flow.anomaly = new SelfHealingDashboard.AnomalyDetails();
+        flow.anomaly.anomalyType = "FEATURE_REQUEST";
+        flow.anomaly.severity = "MEDIUM";
+        flow.anomaly.message = String.valueOf(ticket.getOrDefault("title", "Feature request"));
+        flow.anomaly.sourceFile = String.valueOf(ticket.getOrDefault("key", ticket.getOrDefault("id", "ticket")));
+        flow.anomaly.lineNumber = 0;
+        flow.anomaly.detectedAt = Instant.now().toEpochMilli();
+
+        addStep(flow, "SIGNAL", "Feature ticket ingested", "ProductMCP", "ticket", ticket.getOrDefault("key", ticket.get("id")));
+        addStep(flow, "CONTEXT", "Feature scope normalized", "CodeAnalysisMCP", "title", ticket.getOrDefault("title", "Feature request"));
+        addStep(flow, "HYPOTHESIS", "Feature implementation plan drafted", "DynamicAI", "workType", "FEATURE");
+        addStep(flow, "EXECUTION", "Feature queued for autonomous implementation", "DevelopmentMCP", "ticketUrl", ticket.getOrDefault("url", ""), "PENDING");
+        addStep(flow, "DEPLOY", "Deployment policy gate pending", "DeploymentMCP", "status", "pending", "PENDING");
+        addStep(flow, "VALIDATION", "Acceptance validation pending", "TelemetryMCP", "status", "pending", "PENDING");
+
+        flow.workflowStatus = "PLANNED";
+        flow.status = SelfHealingDashboard.FlowStatus.EXECUTION_STARTED;
+        flow.ticket = new LinkedHashMap<>(ticket);
+        flow.journey = buildJourney(
+                flow.workflowStatus,
+                flow.createdAt,
+                null,
+                null,
+                "Feature request collected from ticketing",
+                "Feature plan generated",
+                "Deployment gated by policy",
+                List.of()
+        );
+
+        dataModel.addHealingFlow(flow);
+        cfg.featureFlowByTicket.put(ticketKey, flow.id);
+        addAlarm(cfg, "FEATURE_INTAKE", "MEDIUM", "Feature ticket queued: " + flow.anomaly.message, flow.id);
+        return flow;
+    }
+
+    private void markFeaturePausedByIncident(SelfHealingDashboard.HealingFlow flow) {
+        if (flow == null) {
+            return;
+        }
+        flow.workflowStatus = "PAUSED_BY_INCIDENT";
+        SelfHealingDashboard.FlowStep execution = findStep(flow, "EXECUTION");
+        if (execution != null) {
+            execution.status = "PENDING";
+            execution.details.put("preemption", "incident-first");
+            execution.details.put("pauseReason", "active-high-severity-incident");
+        }
+        if (flow.journey == null) {
+            flow.journey = new LinkedHashMap<>();
+        }
+        flow.journey.put("flowStatus", flow.workflowStatus);
+    }
+
+    private void applyFeatureRiskGate(SelfHealingDashboard.HealingFlow flow, Map<String, Object> ticket) {
+        if (flow == null) {
+            return;
+        }
+
+        String title = String.valueOf(ticket.getOrDefault("title", "feature"));
+        int estimatedLinesChanged = Math.max(30, Math.min(400, title.length() * 4));
+        boolean hasBreakingChanges = containsLabel(ticket, "breaking") || containsLabel(ticket, "api-break");
+        boolean hasTests = !containsLabel(ticket, "no-tests");
+
+        Map<String, Object> risk = mcpOrchestrator.assessDeploymentRisk(
+                hasBreakingChanges ? "database" : "feature",
+                estimatedLinesChanged,
+                hasTests,
+                hasBreakingChanges
+        );
+
+        String riskLevel = String.valueOf(risk.getOrDefault("riskLevel", "MEDIUM"));
+        boolean approvalRequired = !"LOW".equalsIgnoreCase(riskLevel);
+
+        flow.workflowStatus = approvalRequired ? "AWAITING_APPROVAL" : "READY_FOR_AUTONOMOUS_EXECUTION";
+
+        SelfHealingDashboard.FlowStep execution = findStep(flow, "EXECUTION");
+        if (execution != null) {
+            execution.status = approvalRequired ? "PENDING" : "COMPLETED";
+            execution.details.put("riskLevel", riskLevel);
+            execution.details.put("riskScore", risk.getOrDefault("riskScore", 0.5));
+            execution.details.put("approvalRequired", approvalRequired);
+            execution.details.put("riskFactors", risk.getOrDefault("riskFactors", List.of()));
+        }
+
+        SelfHealingDashboard.FlowStep deploy = findStep(flow, "DEPLOY");
+        if (deploy != null) {
+            deploy.status = "PENDING";
+            deploy.details.put("policyGate", approvalRequired ? "human-approval-required" : "auto-merge-eligible");
+        }
+
+        if (flow.journey == null) {
+            flow.journey = new LinkedHashMap<>();
+        }
+        flow.journey.put("flowStatus", flow.workflowStatus);
+        flow.journey.put("featureRisk", risk);
+    }
+
+    private boolean containsLabel(Map<String, Object> ticket, String expected) {
+        if (ticket == null || expected == null || expected.isBlank()) {
+            return false;
+        }
+        String probe = expected.toLowerCase(Locale.ROOT);
+        Object labelsObj = ticket.get("labels");
+        if (!(labelsObj instanceof List<?> labels)) {
+            return false;
+        }
+        for (Object raw : labels) {
+            if (String.valueOf(raw).toLowerCase(Locale.ROOT).contains(probe)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private boolean shouldTrigger(SystemConfig cfg, String key, long cooldownSeconds) {
         long now = Instant.now().getEpochSecond();
         Long last = cfg.lastTriggerByKey.get(key);
@@ -1198,6 +1793,77 @@ public class LocalSystemsMonitorDemo {
             return "branch:" + branch;
         } catch (Exception ex) {
             return fallbackPrId + " (simulated:real-pr-error:" + ex.getClass().getSimpleName() + ")";
+        }
+    }
+
+    private String executeRealFeaturePlanAndPr(SystemConfig cfg,
+                                               SelfHealingDashboard.HealingFlow flow,
+                                               String fallbackPrId) {
+        try {
+            if (cfg.gitRepository == null || cfg.gitRepository.isBlank()) {
+                return fallbackPrId + " (simulated:no-git-repo)";
+            }
+
+            Path repoPath = resolveLocalRepoPath(cfg);
+            if (repoPath == null) {
+                return fallbackPrId + " (simulated:no-local-repo)";
+            }
+
+            String branch = "uac/feature-" + shortId();
+            List<String> baseCandidates = resolveBaseBranchCandidates(cfg, repoPath);
+            String baseBranch = checkoutFirstAvailableBase(repoPath, baseCandidates);
+            if (baseBranch == null) {
+                return fallbackPrId + " (simulated:checkout-base-failed:" + String.join("|", baseCandidates) + ")";
+            }
+            if (!git(repoPath, "checkout", "-b", branch)) {
+                return fallbackPrId + " (simulated:create-branch-failed)";
+            }
+
+            boolean patched = applyFeatureImplementation(repoPath, cfg, flow);
+            if (!patched) {
+                patched = createFeaturePlanArtifact(repoPath, cfg, flow);
+            }
+            if (!patched) {
+                return fallbackPrId + " (simulated:no-feature-artifact)";
+            }
+
+            if (!git(repoPath, "add", ".")) {
+                return fallbackPrId + " (simulated:git-add-failed)";
+            }
+            if (!git(repoPath, "commit", "-m", "UAC feature: " + slugifyFeatureTitle(flow.anomaly != null ? flow.anomaly.message : flow.id))) {
+                return fallbackPrId + " (simulated:git-commit-failed)";
+            }
+            if (!git(repoPath, "push", "-u", "origin", branch)) {
+                return fallbackPrId + " (simulated:git-push-failed)";
+            }
+
+            String featureTitle = flow.anomaly != null ? defaultIfBlank(flow.anomaly.message, "Feature Delivery") : "Feature Delivery";
+            String prTitle = "UAC Feature: " + featureTitle;
+            String prBody = "Autonomous feature delivery proposal for system: " + cfg.name
+                    + "\n\nFlow ID: " + flow.id
+                    + "\nTicket: " + (flow.ticket != null ? flow.ticket.getOrDefault("key", flow.ticket.get("id")) : "n/a");
+
+            String cliUrl = createPullRequestViaCLI(repoPath, prTitle, prBody, branch, baseBranch);
+            if (cliUrl != null) {
+                return cliUrl;
+            }
+
+            String[] ownerRepo = parseOwnerRepo(cfg.gitRepository);
+            if (ownerRepo != null) {
+                String tokenEnv = (cfg.tokenEnv != null && !cfg.tokenEnv.isBlank()) ? cfg.tokenEnv : "GITHUB_TOKEN";
+                String token = System.getenv(tokenEnv);
+                if (token != null && !token.isBlank()) {
+                    GitHubAPI gh = new GitHubAPI(token, ownerRepo[0], ownerRepo[1], repoPath.toFile());
+                    GitHubAPI.PullRequest pr = gh.createPullRequest(prTitle, prBody, branch, baseBranch);
+                    if (pr != null) {
+                        return pr.getUrl();
+                    }
+                }
+            }
+
+            return "branch:" + branch;
+        } catch (Exception ex) {
+            return fallbackPrId + " (simulated:real-feature-pr-error:" + ex.getClass().getSimpleName() + ")";
         }
     }
 
@@ -1453,6 +2119,234 @@ public class LocalSystemsMonitorDemo {
         }
     }
 
+    private boolean applyFeatureImplementation(Path repoPath,
+                                               SystemConfig cfg,
+                                               SelfHealingDashboard.HealingFlow flow) {
+        if (repoPath == null || cfg == null || flow == null || flow.anomaly == null) {
+            return false;
+        }
+
+        String system = defaultIfBlank(cfg.name, "").toLowerCase(Locale.ROOT);
+        String title = defaultIfBlank(flow.anomaly.message, "").toLowerCase(Locale.ROOT);
+
+        try {
+            if ("payment-api".equals(system) && title.contains("idempotency")) {
+                return applyPaymentIdempotencyFeature(repoPath);
+            }
+            if ("cache-service".equals(system)
+                    && (title.contains("top keys") || title.contains("top-keys") || title.contains("cache stats"))) {
+                return applyCacheStatsTopKeysFeature(repoPath);
+            }
+            if ("worker-service".equals(system)
+                    && (title.contains("dead-letter") || title.contains("retry dashboard") || title.contains("retry summary"))) {
+                return applyWorkerDeadLetterSummaryFeature(repoPath);
+            }
+        } catch (Exception ignored) {
+            return false;
+        }
+
+        return false;
+    }
+
+    private boolean applyPaymentIdempotencyFeature(Path repoPath) throws IOException {
+        Path controller = findFileByName(repoPath, "PaymentController.java");
+        Path service = findFileByName(repoPath, "PaymentService.java");
+        Path request = findFileByName(repoPath, "PaymentRequest.java");
+        if (controller == null || service == null || request == null) {
+            return false;
+        }
+
+        boolean changed = false;
+
+        String requestContent = Files.readString(request, StandardCharsets.UTF_8);
+        if (!requestContent.contains("idempotencyKey")) {
+            String updated = requestContent.replace(
+                    "public class PaymentRequest {\n    private String customer;",
+                    "public class PaymentRequest {\n    private String customer;\n    private String idempotencyKey;"
+            );
+            changed |= writeIfChanged(request, requestContent, updated);
+        }
+
+        String controllerContent = Files.readString(controller, StandardCharsets.UTF_8);
+        if (!controllerContent.contains("Idempotency-Key")) {
+            String updated = controllerContent.replace(
+                    "    @PostMapping\n    public Payment processPayment(@RequestBody PaymentRequest request) {\n        return paymentService.processPayment(request);\n    }",
+                    "    @PostMapping\n    public Payment processPayment(\n            @RequestHeader(value = \"Idempotency-Key\", required = false) String idempotencyKey,\n            @RequestBody PaymentRequest request\n    ) {\n        if ((request.getIdempotencyKey() == null || request.getIdempotencyKey().isBlank())\n                && idempotencyKey != null && !idempotencyKey.isBlank()) {\n            request.setIdempotencyKey(idempotencyKey);\n        }\n        return paymentService.processPayment(request);\n    }"
+            );
+            changed |= writeIfChanged(controller, controllerContent, updated);
+        }
+
+        String serviceContent = Files.readString(service, StandardCharsets.UTF_8);
+        String updatedService = serviceContent;
+        if (!updatedService.contains("ConcurrentHashMap")) {
+            updatedService = updatedService.replace(
+                    "import java.util.UUID;",
+                    "import java.util.UUID;\nimport java.util.concurrent.ConcurrentHashMap;"
+            );
+        }
+        if (!updatedService.contains("idempotencyCache")) {
+            updatedService = updatedService.replace(
+                    "    private final List<String> recentErrors = new ArrayList<>();",
+                    "    private final List<String> recentErrors = new ArrayList<>();\n    private final Map<String, Payment> idempotencyCache = new ConcurrentHashMap<>();"
+            );
+        }
+        if (!updatedService.contains("Returning cached payment for idempotencyKey")) {
+            updatedService = updatedService.replace(
+                    "            log.info(\"Processing payment: amount={}, currency={}\", request.getAmount(), request.getCurrency());\n",
+                    "            log.info(\"Processing payment: amount={}, currency={}\", request.getAmount(), request.getCurrency());\n\n            String idempotencyKey = request.getIdempotencyKey();\n            if (idempotencyKey != null && !idempotencyKey.isBlank()) {\n                Payment cached = idempotencyCache.get(idempotencyKey);\n                if (cached != null) {\n                    log.info(\"Returning cached payment for idempotencyKey={}\", idempotencyKey);\n                    return cached;\n                }\n            }\n"
+            );
+        }
+        if (!updatedService.contains("idempotencyCache.putIfAbsent")) {
+            updatedService = updatedService.replace(
+                    "            log.info(\"Payment processed successfully: id={}, amount={}\", payment.getId(), payment.getAmount());\n            return payment;",
+                    "            if (idempotencyKey != null && !idempotencyKey.isBlank()) {\n                idempotencyCache.putIfAbsent(idempotencyKey, payment);\n            }\n\n            log.info(\"Payment processed successfully: id={}, amount={}\", payment.getId(), payment.getAmount());\n            return payment;"
+            );
+        }
+        changed |= writeIfChanged(service, serviceContent, updatedService);
+
+        return changed;
+    }
+
+    private boolean applyCacheStatsTopKeysFeature(Path repoPath) throws IOException {
+        Path controller = findFileByName(repoPath, "CacheController.java");
+        Path service = findFileByName(repoPath, "CacheService.java");
+        if (controller == null || service == null) {
+            return false;
+        }
+
+        boolean changed = false;
+
+        String controllerContent = Files.readString(controller, StandardCharsets.UTF_8);
+        String updatedController = controllerContent;
+        if (!updatedController.contains("top_keys")) {
+            updatedController = updatedController.replace(
+                    "    @GetMapping(\"/stats\")\n    public Map<String, Object> stats() {\n        return Map.of(\n            \"size\", cacheService.getCacheSize(),\n            \"memory\", cacheService.getMemoryUsage(),\n            \"hit_ratio\", cacheService.getHitRatio(),\n            \"timestamp\", System.currentTimeMillis()\n        );\n    }",
+                    "    @GetMapping(\"/stats\")\n    public Map<String, Object> stats() {\n        return Map.of(\n            \"size\", cacheService.getCacheSize(),\n            \"memory\", cacheService.getMemoryUsage(),\n            \"hit_ratio\", cacheService.getHitRatio(),\n            \"top_keys\", cacheService.getTopKeys(5),\n            \"timestamp\", System.currentTimeMillis()\n        );\n    }\n\n    @GetMapping(\"/stats/top-keys\")\n    public Map<String, Object> topKeys(@RequestParam(defaultValue = \"5\") int limit) {\n        return Map.of(\n            \"top_keys\", cacheService.getTopKeys(limit),\n            \"size\", cacheService.getCacheSize(),\n            \"timestamp\", System.currentTimeMillis()\n        );\n    }"
+            );
+        }
+        changed |= writeIfChanged(controller, controllerContent, updatedController);
+
+        String serviceContent = Files.readString(service, StandardCharsets.UTF_8);
+        String updatedService = serviceContent;
+        if (!updatedService.contains("public List<String> getTopKeys")) {
+            updatedService = updatedService.replace(
+                    "    public double getHitRatio() {\n        long total = hits + misses;\n        return total == 0 ? 0 : (double) hits / total;\n    }\n",
+                    "    public double getHitRatio() {\n        long total = hits + misses;\n        return total == 0 ? 0 : (double) hits / total;\n    }\n\n    public List<String> getTopKeys(int limit) {\n        List<String> keys = new ArrayList<>(cache.keySet());\n        Collections.reverse(keys);\n        int safeLimit = Math.max(0, Math.min(limit, keys.size()));\n        return new ArrayList<>(keys.subList(0, safeLimit));\n    }\n"
+            );
+        }
+        changed |= writeIfChanged(service, serviceContent, updatedService);
+
+        return changed;
+    }
+
+    private boolean applyWorkerDeadLetterSummaryFeature(Path repoPath) throws IOException {
+        Path controller = findFileByName(repoPath, "HealthController.java");
+        Path service = findFileByName(repoPath, "WorkerService.java");
+        if (controller == null || service == null) {
+            return false;
+        }
+
+        boolean changed = false;
+
+        String controllerContent = Files.readString(controller, StandardCharsets.UTF_8);
+        String updatedController = controllerContent;
+        if (!updatedController.contains("dead_letter_summary")) {
+            updatedController = updatedController.replace(
+                    "    @GetMapping(\"/stats\")\n    public Map<String, Object> stats() {\n        return Map.of(\n            \"processed\", workerService.getJobsProcessed(),\n            \"failed\", workerService.getJobsFailed(),\n            \"memory\", workerService.getMemoryUsage(),\n            \"leak_size\", workerService.getLeakSize(),\n            \"timestamp\", System.currentTimeMillis()\n        );\n    }",
+                    "    @GetMapping(\"/stats\")\n    public Map<String, Object> stats() {\n        return Map.of(\n            \"processed\", workerService.getJobsProcessed(),\n            \"failed\", workerService.getJobsFailed(),\n            \"memory\", workerService.getMemoryUsage(),\n            \"leak_size\", workerService.getLeakSize(),\n            \"dead_letter_summary\", workerService.getDeadLetterSummary(),\n            \"timestamp\", System.currentTimeMillis()\n        );\n    }\n\n    @GetMapping(\"/dead-letter/summary\")\n    public Map<String, Object> deadLetterSummary() {\n        return workerService.getDeadLetterSummary();\n    }"
+            );
+        }
+        changed |= writeIfChanged(controller, controllerContent, updatedController);
+
+        String serviceContent = Files.readString(service, StandardCharsets.UTF_8);
+        String updatedService = serviceContent;
+        if (!updatedService.contains("deadLetterJobs")) {
+            updatedService = updatedService.replace(
+                    "    private long jobsProcessed = 0;\n    private long jobsFailed = 0;\n    private long processingTime = 0;",
+                    "    private long jobsProcessed = 0;\n    private long jobsFailed = 0;\n    private long processingTime = 0;\n    private long deadLetterJobs = 0;\n    private long retryAttemptsScheduled = 0;"
+            );
+        }
+        if (!updatedService.contains("retryAttemptsScheduled += 3")) {
+            updatedService = updatedService.replace(
+                    "                if (failureModeEnabled && i % 4 == 0) {\n                    jobsFailed++;\n                    log.error(\"Injected worker failure while processing job batch (i={})\", i);\n                }",
+                    "                if (failureModeEnabled && i % 4 == 0) {\n                    jobsFailed++;\n                    deadLetterJobs++;\n                    retryAttemptsScheduled += 3;\n                    log.error(\"Injected worker failure while processing job batch (i={})\", i);\n                }"
+            );
+        }
+        if (!updatedService.contains("public Map<String, Object> getDeadLetterSummary()")) {
+            updatedService = updatedService.replace(
+                    "    public long getLeakSize() {\n        return memoryLeak.size();\n    }\n",
+                    "    public long getLeakSize() {\n        return memoryLeak.size();\n    }\n\n    public Map<String, Object> getDeadLetterSummary() {\n        Map<String, Object> summary = new LinkedHashMap<>();\n        summary.put(\"dead_letter_jobs\", deadLetterJobs);\n        summary.put(\"retry_attempts_scheduled\", retryAttemptsScheduled);\n        summary.put(\"jobs_failed\", jobsFailed);\n        summary.put(\"timestamp\", System.currentTimeMillis());\n        return summary;\n    }\n"
+            );
+        }
+        changed |= writeIfChanged(service, serviceContent, updatedService);
+
+        return changed;
+    }
+
+    private boolean writeIfChanged(Path file, String original, String updated) throws IOException {
+        if (original == null || updated == null || original.equals(updated)) {
+            return false;
+        }
+        Files.writeString(file, updated, StandardCharsets.UTF_8, StandardOpenOption.TRUNCATE_EXISTING);
+        return true;
+    }
+
+    private boolean createFeaturePlanArtifact(Path repoPath,
+                                              SystemConfig cfg,
+                                              SelfHealingDashboard.HealingFlow flow) {
+        try {
+            Path dir = repoPath.resolve(".uac").resolve("feature-plans");
+            Files.createDirectories(dir);
+
+            String title = flow != null && flow.anomaly != null
+                    ? defaultIfBlank(flow.anomaly.message, "feature-request")
+                    : "feature-request";
+            String fileName = slugifyFeatureTitle(title);
+            if (fileName.isBlank()) {
+                fileName = "feature-request-" + shortId();
+            }
+            Path file = dir.resolve(fileName + ".md");
+
+            String ticketKey = flow != null && flow.ticket != null
+                    ? String.valueOf(flow.ticket.getOrDefault("key", flow.ticket.get("id")))
+                    : "n/a";
+            String ticketUrl = flow != null && flow.ticket != null
+                    ? String.valueOf(flow.ticket.getOrDefault("url", ""))
+                    : "";
+
+            String content = "# UAC Feature Plan\n\n"
+                    + "- System: " + (cfg == null ? "unknown" : cfg.name) + "\n"
+                    + "- Flow ID: " + (flow == null ? "n/a" : flow.id) + "\n"
+                    + "- Ticket: " + ticketKey + "\n"
+                    + (ticketUrl.startsWith("http") ? "- Ticket URL: " + ticketUrl + "\n" : "")
+                    + "- Generated: " + Instant.now() + "\n\n"
+                    + "## Requested Feature\n"
+                    + title + "\n\n"
+                    + "## Proposed Scope\n"
+                    + "1. Review the target service contract and identify touch points.\n"
+                    + "2. Implement the smallest safe change set to satisfy the feature request.\n"
+                    + "3. Add or update tests covering the new behavior.\n"
+                    + "4. Document rollout and rollback notes.\n\n"
+                    + "## Autonomous Review Notes\n"
+                    + "- This PR was created from an approved UAC feature-delivery flow.\n"
+                    + "- The first iteration uses a reviewable implementation plan artifact for human validation.\n";
+
+            Files.writeString(file, content, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private String slugifyFeatureTitle(String value) {
+        if (value == null || value.isBlank()) {
+            return "feature-request";
+        }
+        String slug = value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "-").replaceAll("^-+|-+$", "");
+        return slug.isBlank() ? "feature-request" : (slug.length() > 60 ? slug.substring(0, 60) : slug);
+    }
+
     /**
      * Create a GitHub pull request via the GitHub CLI (gh pr create).
      * This uses the existing "gh auth login" / SSH credential chain so no
@@ -1627,6 +2521,40 @@ public class LocalSystemsMonitorDemo {
                 }
             } else if ("ticketing".equals(currentSection) && "token_env".equals(key)) {
                 cfg.ticketTokenEnv = value;
+            } else if ("feature_intake".equals(currentSection) && "enabled".equals(key)) {
+                cfg.featureIntakeEnabled = "true".equalsIgnoreCase(value);
+            } else if ("feature_intake".equals(currentSection) && "label".equals(key)) {
+                cfg.featureLabel = value;
+            } else if ("feature_intake".equals(currentSection) && "poll_interval_seconds".equals(key)) {
+                try {
+                    cfg.featurePollIntervalSeconds = Math.max(15, Integer.parseInt(value));
+                } catch (NumberFormatException ignored) {
+                    cfg.featurePollIntervalSeconds = 60;
+                }
+            } else if ("feature_intake".equals(currentSection) && "scan_pages".equals(key)) {
+                try {
+                    cfg.featureTicketScanPages = Math.max(1, Math.min(20, Integer.parseInt(value)));
+                } catch (NumberFormatException ignored) {
+                    cfg.featureTicketScanPages = 6;
+                }
+            } else if ("feature_intake".equals(currentSection) && "scan_page_size".equals(key)) {
+                try {
+                    cfg.featureTicketPageSize = Math.max(10, Math.min(100, Integer.parseInt(value)));
+                } catch (NumberFormatException ignored) {
+                    cfg.featureTicketPageSize = 50;
+                }
+            } else if ("feature_intake".equals(currentSection) && "window_seconds".equals(key)) {
+                try {
+                    cfg.featureIntakeWindowSeconds = Math.max(30, Integer.parseInt(value));
+                } catch (NumberFormatException ignored) {
+                    cfg.featureIntakeWindowSeconds = 180;
+                }
+            } else if ("feature_intake".equals(currentSection) && "anomaly_ticket_throttle_seconds".equals(key)) {
+                try {
+                    cfg.featureAnomalyTicketThrottleSeconds = Math.max(30, Integer.parseInt(value));
+                } catch (NumberFormatException ignored) {
+                    cfg.featureAnomalyTicketThrottleSeconds = 120;
+                }
             }
         }
 
@@ -1653,6 +2581,22 @@ public class LocalSystemsMonitorDemo {
         String ticketProjectId;
         int ticketTypeId = 1;
         String ticketTokenEnv = "GITLAB_TOKEN";
+        boolean featureIntakeEnabled = false;
+        String featureLabel = "feature";
+        int featurePollIntervalSeconds = 60;
+        int featureTicketScanPages = 6;
+        int featureTicketPageSize = 50;
+        int featureIntakeWindowSeconds = 180;
+        int featureAnomalyTicketThrottleSeconds = 120;
+        long featurePollCount;
+        long featureTicketsScanned;
+        long featureTicketsMatched;
+        long featureFlowsCreated;
+        long suppressedAnomalyTickets;
+        long featureIntakeWindowUntilMs;
+        long lastFeatureIntakeAt;
+        Set<String> completedFeatureTickets = ConcurrentHashMap.newKeySet();
+        Map<String, String> featureFlowByTicket = new ConcurrentHashMap<>();
         // Docker deployment fields
         String dockerContainerName;
         String dockerServiceName;

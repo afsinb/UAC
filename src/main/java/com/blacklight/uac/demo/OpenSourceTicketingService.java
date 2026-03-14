@@ -75,6 +75,171 @@ public class OpenSourceTicketingService {
         return updateLocalTicket(existingTicket, status, comment, labels);
     }
 
+    public List<Map<String, Object>> listOpenTickets(TicketConfig config) {
+        return listOpenTickets(config, 1, 30);
+    }
+
+    public List<Map<String, Object>> listOpenTickets(TicketConfig config, int maxPages, int pageSize) {
+        if (config == null || !config.enabled) {
+            return Collections.emptyList();
+        }
+        int boundedPages = Math.max(1, Math.min(maxPages, 20));
+        int boundedPageSize = Math.max(10, Math.min(pageSize, 100));
+
+        // Honor explicit provider selection; do not silently downgrade to local for polling.
+        String provider = config.provider == null ? "" : config.provider.trim().toLowerCase(Locale.ROOT);
+        if ("openproject".equals(provider)) {
+            if (!config.isOpenProjectEnabled()) {
+                return Collections.emptyList();
+            }
+            return listOpenProjectWorkPackages(config, boundedPages, boundedPageSize);
+        }
+        if ("gitlab".equals(provider)) {
+            if (!config.isGitLabEnabled()) {
+                return Collections.emptyList();
+            }
+            return listGitLabIssues(config, boundedPages, boundedPageSize);
+        }
+
+        if (config.isOpenProjectEnabled()) {
+            return listOpenProjectWorkPackages(config, boundedPages, boundedPageSize);
+        }
+        if (config.isGitLabEnabled()) {
+            return listGitLabIssues(config, boundedPages, boundedPageSize);
+        }
+        return listLocalTickets();
+    }
+
+    private List<Map<String, Object>> listLocalTickets() {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Map<String, Object> ticket : localTickets.values()) {
+            String status = String.valueOf(ticket.getOrDefault("status", "OPEN"));
+            if (isFinalStatus(status) || "CLOSED".equalsIgnoreCase(status)) {
+                continue;
+            }
+            out.add(new HashMap<>(ticket));
+        }
+        return out;
+    }
+
+    private List<Map<String, Object>> listOpenProjectWorkPackages(TicketConfig config, int maxPages, int pageSize) {
+        try {
+            String base = normalizeBaseUrl(config.baseUrl);
+            String project = urlEncode(config.projectId);
+            Pattern wpPattern = Pattern.compile(
+                    "\\\"subject\\\"\\s*:\\s*\\\"([^\\\"]*)\\\".*?"
+                            + "\\\"self\\\"\\s*:\\s*\\{\\s*\\\"href\\\"\\s*:\\s*\\\"/api/v3/work_packages/(\\d+)\\\"",
+                    Pattern.DOTALL
+            );
+
+            Map<Integer, Map<String, Object>> dedup = new java.util.LinkedHashMap<>();
+            for (int page = 0; page < maxPages; page++) {
+                int offset = page * pageSize;
+                String url = base + "/api/v3/projects/" + project + "/work_packages?pageSize=" + pageSize + "&offset=" + offset;
+
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(8))
+                        .header("Authorization", openProjectAuthHeader(config.token))
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                    break;
+                }
+
+                String body = res.body() == null ? "" : res.body();
+                Matcher matcher = wpPattern.matcher(body);
+                int matched = 0;
+                while (matcher.find()) {
+                    matched++;
+                    String title = matcher.group(1);
+                    Integer id = Integer.parseInt(matcher.group(2));
+
+                    Map<String, Object> ticket = new HashMap<>();
+                    ticket.put("provider", "openproject");
+                    ticket.put("id", id);
+                    ticket.put("key", "#" + id);
+                    ticket.put("title", defaultIfBlank(title, "OpenProject work package #" + id));
+                    ticket.put("status", "OPEN");
+                    ticket.put("url", base + "/work_packages/" + id);
+                    ticket.put("labels", new ArrayList<String>());
+                    dedup.putIfAbsent(id, ticket);
+                }
+
+                if (matched == 0) {
+                    break;
+                }
+            }
+            return new ArrayList<>(dedup.values());
+        } catch (Exception ignored) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<Map<String, Object>> listGitLabIssues(TicketConfig config, int maxPages, int pageSize) {
+        try {
+            String base = normalizeBaseUrl(config.baseUrl);
+            String project = URLEncoder.encode(config.projectId, StandardCharsets.UTF_8);
+            List<Map<String, Object>> tickets = new ArrayList<>();
+            for (int page = 1; page <= maxPages; page++) {
+                String url = base + "/api/v4/projects/" + project + "/issues?state=opened&per_page=" + pageSize + "&page=" + page;
+
+                HttpRequest req = HttpRequest.newBuilder(URI.create(url))
+                        .timeout(Duration.ofSeconds(8))
+                        .header("PRIVATE-TOKEN", config.token)
+                        .header("Accept", "application/json")
+                        .GET()
+                        .build();
+
+                HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                if (res.statusCode() < 200 || res.statusCode() >= 300) {
+                    break;
+                }
+
+                String body = res.body() == null ? "" : res.body();
+                List<String> iids = extractMatches(body, Pattern.compile("\\\"iid\\\"\\s*:\\s*(\\d+)"));
+                List<String> titles = extractMatches(body, Pattern.compile("\\\"title\\\"\\s*:\\s*\\\"([^\\\"]*)\\\""));
+                List<String> urls = extractMatches(body, Pattern.compile("\\\"web_url\\\"\\s*:\\s*\\\"([^\\\"]*)\\\""));
+                if (iids.isEmpty()) {
+                    break;
+                }
+
+                for (int i = 0; i < iids.size(); i++) {
+                    String iid = iids.get(i);
+                    String title = i < titles.size() ? titles.get(i) : "GitLab issue #" + iid;
+                    String webUrl = i < urls.size() ? urls.get(i) : "";
+
+                    Map<String, Object> ticket = new HashMap<>();
+                    ticket.put("provider", "gitlab");
+                    ticket.put("id", Integer.parseInt(iid));
+                    ticket.put("key", "GL-" + iid);
+                    ticket.put("title", defaultIfBlank(title, "GitLab issue #" + iid));
+                    ticket.put("status", "OPEN");
+                    ticket.put("url", defaultIfBlank(webUrl, ""));
+                    ticket.put("labels", new ArrayList<String>());
+                    tickets.add(ticket);
+                }
+            }
+            return tickets;
+        } catch (Exception ignored) {
+            return Collections.emptyList();
+        }
+    }
+
+    private List<String> extractMatches(String input, Pattern pattern) {
+        if (input == null || input.isBlank()) {
+            return List.of();
+        }
+        List<String> matches = new ArrayList<>();
+        Matcher matcher = pattern.matcher(input);
+        while (matcher.find()) {
+            matches.add(matcher.group(1));
+        }
+        return matches;
+    }
+
     private Map<String, Object> createOpenProjectWorkPackage(TicketConfig config, TicketPayload payload) {
         try {
             String base = normalizeBaseUrl(config.baseUrl);
@@ -439,6 +604,24 @@ public class OpenSourceTicketingService {
         Pattern p = Pattern.compile("\\\"description\\\"\\s*:\\s*\\{[^{}]*\\\"raw\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"", Pattern.DOTALL);
         Matcher m = p.matcher(json);
         return m.find() ? m.group(1).replace("\\n", "\n") : "";
+    }
+
+    private List<String> extractStringArray(String json, String key) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        Pattern p = Pattern.compile("\\\"" + Pattern.quote(key) + "\\\"\\s*:\\s*\\[(.*?)\\]", Pattern.DOTALL);
+        Matcher m = p.matcher(json);
+        if (!m.find()) {
+            return List.of();
+        }
+        String raw = m.group(1);
+        Matcher itemMatcher = Pattern.compile("\\\"([^\\\"]*)\\\"").matcher(raw);
+        List<String> out = new ArrayList<>();
+        while (itemMatcher.find()) {
+            out.add(itemMatcher.group(1));
+        }
+        return out;
     }
 
     private Integer extractOpenProjectWorkPackageId(String json) {
